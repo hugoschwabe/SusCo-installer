@@ -1,0 +1,52 @@
+# SusCo experiment configuration.
+#
+# Paths are resolved relative to the repository root unless absolute.
+# Per-host values detected by `make install` live in configs/host.local.yaml.
+
+model: qwen3:1.7b
+model_digest: ""
+
+ollama_url: http://127.0.0.1:11434
+kepler_url: http://127.0.0.1:28282/metrics
+prometheus_url: http://127.0.0.1:9090
+
+dataset: data/processed/gsm8k_test.jsonl
+results_dir: results
+
+# Decoding. temperature=0 makes the accuracy comparison deterministic.
+temperature: 0.0
+seed: 42
+top_p: 1.0
+top_k: 1
+num_predict: 2048
+num_ctx: 4096
+num_gpu: 0
+
+# Both arms use the same prompt and answer format.
+system_prompt: >-
+  Solve the problem carefully. End your final answer with a line of the form
+  "#### <number>". Do not put anything after that line.
+
+# Requested number of repetitions for each profile.
+test_questions: 5
+test_repetitions: 1
+pilot_questions: 100
+pilot_repetitions: 1
+full_repetitions: 3
+
+# Measurement windows and pauses.
+idle_window_s: 1.0
+inter_request_s: 1.0
+inter_repetition_s: 60.0
+request_timeout_s: 1800
+warmup_prompts: 2
+
+# Kepler. The meter scrapes Kepler directly at request boundaries.
+kepler_zone: package
+kepler_monitor_interval_ms: 100
+kepler_timeout_s: 3.0
+low_confidence_window_factor: 5.0
+
+# Difficulty is a proxy: reasoning-step count grouped into quantile bins.
+difficulty_bins: 5
+sample_seed: 42
