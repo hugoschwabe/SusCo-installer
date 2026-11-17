@@ -124,7 +124,8 @@ esac
 if have jq; then pass "jq" "$(jq --version 2>/dev/null)"
 else fail "jq" "not installed"; fi
 
-VIRT="$(systemd-detect-virt 2>/dev/null || echo unknown)"
+VIRT="$(systemd-detect-virt 2>/dev/null || true)"
+[[ -n "$VIRT" ]] || VIRT="unknown"
 if [[ "$VIRT" == "none" ]]; then pass "Bare metal" "no virtualization detected"
 else warn "Bare metal" "virtualized: $VIRT (RAPL may be hidden)"; fi
 

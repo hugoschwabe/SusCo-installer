@@ -223,7 +223,10 @@ EOF
   fi
 
   local virt
-  virt="$(systemd-detect-virt 2>/dev/null || echo unknown)"
+  # systemd-detect-virt exits 1 on bare metal (no virtualization detected) but
+  # still prints "none"; use `|| true` so the fallback does not append to it.
+  virt="$(systemd-detect-virt 2>/dev/null || true)"
+  [[ -n "$virt" ]] || virt="unknown"
   if [[ "$virt" != "none" ]]; then
     if [[ "$ALLOW_VIRTUALIZED" -eq 1 ]]; then
       warn "Running inside '${virt}'. RAPL is usually hidden in VMs/containers; measurements may be invalid."
