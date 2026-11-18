@@ -86,6 +86,13 @@ section() { printf '\n%s== %s ==%s\n' "$C_BLUE" "$1" "$C_RESET"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Run an instant PromQL query and print the first scalar value, or nothing.
+prom_scalar() {
+  curl -fsS --get --max-time 5 --data-urlencode "query=$1" \
+    http://127.0.0.1:9090/api/v1/query 2>/dev/null \
+    | jq -r '.data.result[0].value[1] // empty' 2>/dev/null || true
+}
+
 # Re-exec with sudo for privileged counter reads when possible.
 if [[ "${EUID}" -ne 0 ]] && have sudo && sudo -n true 2>/dev/null; then
   exec sudo -E bash "$SCRIPT_PATH" "${ORIG_ARGS[@]}"
@@ -289,19 +296,26 @@ if [[ "$SKIP_PROMETHEUS" -eq 1 ]]; then
 else
 if curl -fsS --max-time 5 http://127.0.0.1:9090/-/ready >/dev/null 2>&1; then
   pass "Prometheus endpoint" "http://127.0.0.1:9090"
-  up="$(curl -fsS --get --max-time 5 \
-    --data-urlencode 'query=up{job="kepler"}' \
-    http://127.0.0.1:9090/api/v1/query 2>/dev/null \
-    | jq -r '.data.result[0].value[1] // empty' 2>/dev/null || true)"
+  # Prometheus is "ready" before its first scrape completes; wait for the
+  # kepler target to be scraped at least once instead of racing it.
+  up=""
+  for _ in $(seq 1 20); do
+    up="$(prom_scalar 'up{job="kepler"}')"
+    [[ "$up" == "1" ]] && break
+    sleep 1
+  done
   if [[ "$up" == "1" ]]; then pass "Prometheus -> Kepler" "target up"
   else fail "Prometheus -> Kepler" "target not up (got '${up:-none}')"; fi
 
   q='sum(kepler_node_cpu_joules_total)'
-  v1="$(curl -fsS --get --max-time 5 --data-urlencode "query=$q" http://127.0.0.1:9090/api/v1/query 2>/dev/null \
-    | jq -r '.data.result[0].value[1] // empty' 2>/dev/null || true)"
+  v1=""
+  for _ in $(seq 1 20); do
+    v1="$(prom_scalar "$q")"
+    [[ -n "$v1" ]] && break
+    sleep 1
+  done
   sleep 3
-  v2="$(curl -fsS --get --max-time 5 --data-urlencode "query=$q" http://127.0.0.1:9090/api/v1/query 2>/dev/null \
-    | jq -r '.data.result[0].value[1] // empty' 2>/dev/null || true)"
+  v2="$(prom_scalar "$q")"
   if [[ -n "$v1" && -n "$v2" ]] && awk -v a="$v1" -v b="$v2" 'BEGIN{exit !(b>a)}'; then
     pass "Prometheus energy query" "increased ${v1} -> ${v2}"
   else
