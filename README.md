@@ -239,7 +239,11 @@ ambiguous and change CPU frequency behavior.
 
 Every run prints a performance table for `no_think`, `think`, and both modes
 combined (total energy, tokens, latency, correctness, and energy per correct).
-It also prints the thinking-minus-no-thinking deltas. `make test` and
+It also prints an explicit correct-answer count line, for example
+`Correct answers: no_think 3/5, think 4/5, total 7/10`, and the
+thinking-minus-no-thinking deltas. The same counts are in `summary.json`
+under `thinking_minus_no_thinking` (`no_think_correct`, `think_correct`,
+`total_correct`). `make test` and
 `make pilot` print every per-question row; `make run` prints the first 200 rows
 by default. The full per-question table is always written to
 `results/<run>/report.txt`; use `--max-print-rows` to change the terminal limit.

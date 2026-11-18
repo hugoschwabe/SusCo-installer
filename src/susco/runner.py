@@ -278,6 +278,7 @@ def simple_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     no_think = by_mode[MODE_NO_THINK]
     think = by_mode[MODE_THINK]
+    total = aggregate(records)
     extra_energy = (think["energy_j"] or 0.0) - (no_think["energy_j"] or 0.0)
     extra_correct = (think["correct"] or 0) - (no_think["correct"] or 0)
     return {
@@ -285,8 +286,14 @@ def simple_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "errors": errors,
         "by_mode": by_mode,
         "by_rep": by_rep,
-        "total": aggregate(records),
+        "total": total,
         "thinking_minus_no_thinking": {
+            "no_think_correct": no_think["correct"],
+            "think_correct": think["correct"],
+            "total_correct": total["correct"],
+            "no_think_n": no_think["n"],
+            "think_n": think["n"],
+            "total_n": total["n"],
             "extra_energy_j": extra_energy,
             "extra_tokens": (think["tokens"] or 0) - (no_think["tokens"] or 0),
             "extra_latency_s": (think["latency_s"] or 0.0) - (no_think["latency_s"] or 0.0),
@@ -330,6 +337,13 @@ def _summary_lines(summary: dict[str, Any]) -> list[str]:
         f"{'total':<10} {total['n']:>5} {total['correct']:>8} {_number(total['accuracy'], '.3f'):>7} "
         f"{_number(total['energy_j'], '.2f'):>14} {total['tokens']:>9} "
         f"{_number(total['latency_s'], '.1f'):>11} {_number(total['energy_per_correct_j'], '.2f'):>14}"
+    )
+    no_think = summary["by_mode"][MODE_NO_THINK]
+    think = summary["by_mode"][MODE_THINK]
+    lines.append(
+        f"Correct answers: no_think {no_think['correct']}/{no_think['n']}, "
+        f"think {think['correct']}/{think['n']}, "
+        f"total {total['correct']}/{total['n']}"
     )
     return lines
 

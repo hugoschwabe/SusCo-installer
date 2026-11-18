@@ -309,7 +309,7 @@ extra_energy_per_additional_correct_j = extra_energy_j / extra_correct
 energy_per_correct_ratio = energy_per_correct(think) / energy_per_correct(no_think)
 ```
 
-The marginal ratio is `null` when there are no additional correct answers. Question-level bootstrap resampling provides a confidence interval for the marginal ratio.
+The run report prints `Correct answers: no_think n/N, think n/N, total n/N`, and `summary.json` stores the corresponding `no_think_correct`, `think_correct`, and `total_correct` fields. The marginal ratio is `null` when there are no additional correct answers. Question-level bootstrap resampling provides a confidence interval for the marginal ratio.
 
 ### 7.3 Statistical tests
 

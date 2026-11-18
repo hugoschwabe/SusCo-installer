@@ -36,6 +36,12 @@ def test_simple_summary_excludes_errors_and_computes_marginals():
     assert summary["by_mode"][MODE_NO_THINK]["correct"] == 2
     assert summary["by_mode"][MODE_THINK]["correct"] == 4
     extra = summary["thinking_minus_no_thinking"]
+    assert extra["no_think_correct"] == 2
+    assert extra["think_correct"] == 4
+    assert extra["total_correct"] == 6
+    assert extra["no_think_n"] == 4
+    assert extra["think_n"] == 4
+    assert extra["total_n"] == 8
     assert extra["extra_energy_j"] == 20
     assert extra["extra_correct"] == 2
     assert extra["extra_energy_per_additional_correct_j"] == 10
