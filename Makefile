@@ -3,6 +3,11 @@ PYTHON ?= .venv/bin/python
 CONFIG ?= configs/experiment.yaml
 HOST_CONFIG ?= configs/host.local.yaml
 RESULTS ?= results/latest
+QUESTIONS ?=
+SEED ?=
+SAMPLE ?= random
+RUN_ARGS ?=
+RUN_FLAGS := $(if $(QUESTIONS),--limit $(QUESTIONS) --sample-mode $(SAMPLE)) $(if $(SEED),--seed $(SEED)) $(RUN_ARGS)
 
 .PHONY: help install verify test pilot run analyze unit data preflight restore-cpu clean
 
@@ -14,6 +19,7 @@ help:
 	  '  make test        Five-question end-to-end smoke run' \
 	  '  make pilot       100-question pilot, one repetition' \
 	  '  make run         Full GSM8K run, three repetitions' \
+	  '                   e.g. make run QUESTIONS=100 SEED=7' \
 	  '  make analyze     Analyze results/latest and write plots' \
 	  '  make unit        Run pytest' \
 	  '  make data        Download and prepare GSM8K' \
@@ -34,7 +40,7 @@ pilot:
 	./scripts/run_experiment.sh --profile pilot --config "$(CONFIG)" --host-config "$(HOST_CONFIG)"
 
 run:
-	./scripts/run_experiment.sh --profile full --config "$(CONFIG)" --host-config "$(HOST_CONFIG)"
+	./scripts/run_experiment.sh --profile full --config "$(CONFIG)" --host-config "$(HOST_CONFIG)" $(RUN_FLAGS)
 
 analyze:
 	$(PYTHON) -m susco.analysis.report --results "$(RESULTS)"

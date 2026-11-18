@@ -3,6 +3,7 @@ from susco.data import (
     difficulty_raw,
     load_prepared,
     prepare_rows,
+    random_sample,
     reasoning_steps,
     stratified_sample,
 )
@@ -47,6 +48,22 @@ def test_stratified_sample_returns_exact_size():
     sample = stratified_sample(rows, 12, seed=7)
     assert len(sample) == 12
     assert len({row["id"] for row in sample}) == 12
+
+
+def test_random_sample_is_reproducible_and_exact_size():
+    rows = assign_difficulty(_raw_rows(50), bins=5)
+    first = random_sample(rows, 12, seed=7)
+    second = random_sample(rows, 12, seed=7)
+    other = random_sample(rows, 12, seed=8)
+    assert len(first) == 12
+    assert [row["id"] for row in first] == [row["id"] for row in second]
+    assert [row["id"] for row in first] != [row["id"] for row in other]
+
+
+def test_random_sample_all_rows_when_n_is_large():
+    rows = assign_difficulty(_raw_rows(8), bins=4)
+    sample = random_sample(rows, 100, seed=1)
+    assert len(sample) == 8
 
 
 def test_stratified_sample_all_rows_when_n_is_large():

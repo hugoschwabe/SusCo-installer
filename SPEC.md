@@ -54,7 +54,7 @@ Between repetitions, the runner waits `inter_repetition_s` (default 60 s) to let
 
 ### 2.4 Sampling
 
-Questions are sampled with stratification over the five difficulty bins, preserving the overall proportion and returning exactly the requested count. The same sampled question set is used across repetitions. The sample seed is fixed (`sample_seed: 42`) so runs are reproducible.
+By default, questions are sampled with stratification over the five difficulty bins, preserving the overall proportion and returning exactly the requested count. `--sample-mode random` selects uniformly at random instead, which is what `make run QUESTIONS=n SEED=y` uses. The same sampled question set is used across repetitions. Selection is driven by `--sample-seed`, falling back to `--seed`, then `sample_seed: 42`, so runs are reproducible.
 
 ### 2.5 Warm-up
 
@@ -268,10 +268,11 @@ Each line of `results/<run>/requests.jsonl` is one request:
 
 ```text
 results/run-<timestamp>-<profile>/
-  config.json        # full experiment and host configuration
+  config.json        # full experiment, host, and run/sampling plan
   environment.json   # hostname, platform, CPU count, loadavg, UTC time
   requests.jsonl     # one row per request, append-only, resumable
-  summary.json       # per-mode, per-repetition, marginal summary
+  summary.json       # per-mode, per-repetition, total, marginal summary
+  report.txt         # aggregate tables + full per-question answers/metrics
 results/latest -> run-<...>/
 ```
 
@@ -415,7 +416,7 @@ Committed defaults:
 built-in defaults < configs/experiment.yaml < configs/host.yaml < configs/host.local.yaml
 ```
 
-CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--limit`, `--reps`) take highest precedence.
+CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--sample-seed`, `--sample-mode`, `--limit`, `--reps`) take highest precedence.
 
 ---
 
@@ -429,7 +430,7 @@ CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--limit`, `--reps`) take h
 | `make verify` | Run the independent verifier |
 | `make test` | Five-question end-to-end smoke run |
 | `make pilot` | 100-question pilot, one repetition |
-| `make run` | Full GSM8K run, three repetitions |
+| `make run` | Full GSM8K run, three repetitions; `QUESTIONS=n SEED=n` selects a reproducible random subset |
 | `make analyze` | Analyze `results/latest` and write tables/plots |
 | `make unit` | Run `pytest` |
 | `make data` | Download and prepare GSM8K |
@@ -456,13 +457,15 @@ Before handing over to Python, the wrapper:
 --host-config PATH     host overlay
 --profile test|pilot|full
 --limit N              override question count
+--sample-mode MODE     random or stratified question selection (default stratified)
+--sample-seed N        seed for question selection
 --reps N               override repetitions
 --out DIR              explicit run directory
 --resume               resume newest run or --out
 --no-progress          disable tqdm
 --model TAG            override model
 --kepler-zone ZONE     override energy zone
---seed N               override sampling seed
+--seed N               seed for run order and sampling (unless --sample-seed is set)
 --skip-preflight       skip checks (not recommended)
 ```
 

@@ -80,6 +80,9 @@ make pilot
 # 6. Full experiment: all 1,319 questions, three repetitions.
 make run
 
+# Optional: reproducible random subset (100 questions, seed 7, three reps).
+make run QUESTIONS=100 SEED=7
+
 # 7. Tables and plots.
 make analyze
 ```
@@ -211,6 +214,17 @@ requests:
 | `make pilot` | 100 | 1 | 200 |
 | `make run` | 1,319 | 3 | 7,914 |
 
+To run a reproducible random subset:
+
+```bash
+make run QUESTIONS=100 SEED=7
+```
+
+This selects 100 questions uniformly at random with seed 7, records the selected
+set in `results/<run>/requests.jsonl`, and stores the sampling plan in
+`config.json`. Use `SAMPLE=stratified` for the old difficulty-stratified
+selection instead of `SAMPLE=random` (the default when `QUESTIONS` is set).
+
 Each request is measured individually:
 
 1. Scrape Kepler for an idle baseline.
@@ -222,6 +236,13 @@ Each request is measured individually:
 
 Requests are one at a time. Concurrent requests would make energy attribution
 ambiguous and change CPU frequency behavior.
+
+Every run prints a performance table for `no_think`, `think`, and both modes
+combined (total energy, tokens, latency, correctness, and energy per correct).
+It also prints the thinking-minus-no-thinking deltas. `make test` and
+`make pilot` print every per-question row; `make run` prints the first 200 rows
+by default. The full per-question table is always written to
+`results/<run>/report.txt`; use `--max-print-rows` to change the terminal limit.
 
 ### `make analyze`
 
@@ -367,10 +388,11 @@ Each run creates:
 
 ```text
 results/run-<timestamp>-<profile>/
-  config.json          # experiment + host settings
+  config.json          # experiment, host, and run/sampling plan
   environment.json     # host, platform, CPU count, load, UTC time
   requests.jsonl       # one row per request, append-only, resumable
-  summary.json         # per-mode, per-repetition, marginal summary
+  summary.json         # per-mode, per-repetition, total, marginal summary
+  report.txt           # aggregate tables + full per-question answers/metrics
 results/latest -> run-<...>/
 ```
 
@@ -449,8 +471,8 @@ Precedence:
 built-in defaults < configs/experiment.yaml < configs/host.yaml < configs/host.local.yaml
 ```
 
-CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--limit`, `--reps`) take
-highest precedence.
+CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--sample-seed`,
+`--sample-mode`, `--limit`, `--reps`) take highest precedence.
 
 ### Useful runner commands
 
@@ -458,8 +480,11 @@ highest precedence.
 # Resume the newest unfinished run.
 .venv/bin/python -m susco.runner --profile full --resume
 
-# Limit a run for debugging.
+# Limit a run for debugging (difficulty-stratified by default).
 .venv/bin/python -m susco.runner --profile test --limit 20
+
+# Reproducible uniform random subset.
+.venv/bin/python -m susco.runner --profile full --limit 100 --sample-mode random --seed 7
 
 # Use a different model tag.
 .venv/bin/python -m susco.runner --profile test --model qwen3:1.7b

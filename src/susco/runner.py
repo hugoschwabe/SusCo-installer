@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import random
+import re
 import socket
 import sys
 import time
@@ -19,7 +20,7 @@ from typing import Any
 from tqdm import tqdm
 
 from .config import Config, HostConfig, load_config
-from .data import load_prepared, stratified_sample
+from .data import load_prepared, random_sample, stratified_sample
 from .energy.kepler import EnergyDelta, EnergySample, KeplerError, KeplerMeter
 from .grade import grade
 from .ollama_client import ChatResult, OllamaClient, OllamaError
@@ -284,6 +285,7 @@ def simple_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "errors": errors,
         "by_mode": by_mode,
         "by_rep": by_rep,
+        "total": aggregate(records),
         "thinking_minus_no_thinking": {
             "extra_energy_j": extra_energy,
             "extra_tokens": (think["tokens"] or 0) - (no_think["tokens"] or 0),
@@ -301,20 +303,142 @@ def simple_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _number(value: Any, spec: str = ".2f", dash: str = "-") -> str:
+    if value is None:
+        return dash
+    try:
+        return format(float(value), spec)
+    except (TypeError, ValueError):
+        return dash
+
+
+def _summary_lines(summary: dict[str, Any]) -> list[str]:
+    lines = [
+        f"{'mode':<10} {'n':>5} {'correct':>8} {'acc':>7} "
+        f"{'energy_J':>14} {'tokens':>9} {'latency_s':>11} {'J/correct':>14}"
+    ]
+    for mode in (MODE_NO_THINK, MODE_THINK):
+        a = summary["by_mode"][mode]
+        lines.append(
+            f"{mode:<10} {a['n']:>5} {a['correct']:>8} {_number(a['accuracy'], '.3f'):>7} "
+            f"{_number(a['energy_j'], '.2f'):>14} {a['tokens']:>9} "
+            f"{_number(a['latency_s'], '.1f'):>11} {_number(a['energy_per_correct_j'], '.2f'):>14}"
+        )
+    total = summary["total"]
+    lines.append("-" * 82)
+    lines.append(
+        f"{'total':<10} {total['n']:>5} {total['correct']:>8} {_number(total['accuracy'], '.3f'):>7} "
+        f"{_number(total['energy_j'], '.2f'):>14} {total['tokens']:>9} "
+        f"{_number(total['latency_s'], '.1f'):>11} {_number(total['energy_per_correct_j'], '.2f'):>14}"
+    )
+    return lines
+
+
+def _natural_id(value: Any) -> tuple[Any, ...]:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in re.split(r"(\d+)", str(value))
+    )
+
+
+def _question_lines(records: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        f"{'question_id':<13} {'d':>2} {'mode':<9} {'ok':<3} "
+        f"{'energy_J':>10} {'tok':>5} {'lat_s':>7}  {'gold':<14} {'prediction':<14} question"
+    ]
+    ordered = sorted(
+        records,
+        key=lambda row: (int(row.get("rep", 0)), _natural_id(row.get("question_id")), row.get("mode", "")),
+    )
+    for row in ordered:
+        if row.get("status") == "error":
+            lines.append(
+                f"{row.get('question_id', ''):<13} {row.get('difficulty', ''):>2} "
+                f"{row.get('mode', ''):<9} {'ERR':<3} {row.get('error', '')}"
+            )
+            continue
+        question = " ".join(str(row.get("question") or "").split())
+        if len(question) > 72:
+            question = question[:69] + "..."
+        lines.append(
+            f"{str(row.get('question_id', '')):<13} {int(row.get('difficulty', 1)):>2} "
+            f"{row.get('mode', ''):<9} {'Y' if row.get('correct') else 'N':<3} "
+            f"{_number(row.get('energy_j'), '.2f'):>10} {int(row.get('eval_count') or 0):>5} "
+            f"{_number(row.get('wall_duration_s'), '.1f'):>7}  "
+            f"{str(row.get('gold'))[:14]:<14} {str(row.get('prediction'))[:14]:<14} {question}"
+        )
+    return lines
+
+
+def print_report(
+    records: list[dict[str, Any]],
+    run_dir: Path,
+    profile: str,
+    max_print_rows: int = 200,
+) -> None:
+    summary = simple_summary(records)
+    header = [
+        f"Results: {run_dir}",
+        f"Raw log: {run_dir / 'requests.jsonl'}",
+        f"Summary: {run_dir / 'summary.json'}",
+        f"Records: {summary['records']}; errors: {summary['errors']}",
+    ]
+    aggregate = _summary_lines(summary)
+    question_lines = _question_lines(records)
+    report_lines = header + [""] + aggregate + [
+        "",
+        "thinking - no_think:",
+        json.dumps(summary["thinking_minus_no_thinking"], indent=2),
+        "",
+        "Per-question:",
+    ] + question_lines
+    report_path = run_dir / "report.txt"
+    try:
+        report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"warning: could not write {report_path}: {exc}", file=sys.stderr)
+
+    row_count = max(0, len(question_lines) - 1)
+    if profile in ("test", "pilot") or row_count <= max_print_rows:
+        display = question_lines
+    else:
+        display = question_lines[: max_print_rows + 1]
+        display.append(
+            f"... {row_count - max_print_rows} more rows; full table: {report_path}"
+        )
+
+    print("\n" + "\n".join(header + [""] + aggregate))
+    print()
+    print("thinking - no_think:")
+    print(json.dumps(summary["thinking_minus_no_thinking"], indent=2))
+    print()
+    print("Per-question:")
+    print("\n".join(display))
+    print(f"\nFull report: {report_path}")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run paired Qwen3 GSM8K measurements")
     parser.add_argument("--config", default="configs/experiment.yaml")
     parser.add_argument("--host-config", default="configs/host.local.yaml")
     parser.add_argument("--profile", choices=("test", "pilot", "full"), default="test")
     parser.add_argument("--limit", type=int, default=None, help="override number of questions")
+    parser.add_argument(
+        "--sample-mode",
+        choices=("random", "stratified"),
+        default="stratified",
+        help="question sampling method when --limit is used",
+    )
+    parser.add_argument("--sample-seed", type=int, default=None, help="seed for question selection")
     parser.add_argument("--reps", type=int, default=None, help="override repetitions")
     parser.add_argument("--out", default=None, help="run directory (default results/run-<timestamp>-<profile>)")
     parser.add_argument("--resume", action="store_true", help="resume the newest run or --out")
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--model", default=None)
     parser.add_argument("--kepler-zone", default=None)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None, help="seed for run order; also sampling unless --sample-seed is set")
     parser.add_argument("--skip-preflight", action="store_true")
+    parser.add_argument("--max-print-rows", type=int, default=200, help="max per-question rows printed for full runs")
     return parser.parse_args(argv)
 
 
@@ -343,12 +467,19 @@ def main(argv: list[str] | None = None) -> int:
         print_checks(checks)
         raise_for_failures(checks)
 
+    sample_seed = (
+        args.sample_seed
+        if args.sample_seed is not None
+        else (args.seed if args.seed is not None else config.sample_seed)
+    )
     rows = load_prepared(config.dataset_path)
     if n_questions <= 0 or n_questions >= len(rows):
         questions = list(rows)
-        random.Random(config.sample_seed).shuffle(questions)
+        random.Random(sample_seed).shuffle(questions)
+    elif args.sample_mode == "random":
+        questions = random_sample(rows, n_questions, seed=sample_seed)
     else:
-        questions = stratified_sample(rows, n_questions, seed=config.sample_seed)
+        questions = stratified_sample(rows, n_questions, seed=sample_seed)
 
     base = config.results_path
     base.mkdir(parents=True, exist_ok=True)
@@ -377,7 +508,21 @@ def main(argv: list[str] | None = None) -> int:
     except BlockingIOError:
         raise SystemExit(f"another SusCo run is active (lock: {lock_path})")
 
-    write_json(run_dir / "config.json", {"experiment": asdict(config), "host": asdict(host)})
+    write_json(
+        run_dir / "config.json",
+        {
+            "experiment": asdict(config),
+            "host": asdict(host),
+            "run": {
+                "profile": args.profile,
+                "questions": len(questions),
+                "repetitions": reps,
+                "sample_mode": args.sample_mode,
+                "sample_seed": sample_seed,
+                "order_seed": config.seed,
+            },
+        },
+    )
     write_json(run_dir / "environment.json", environment_payload())
 
     client = OllamaClient(config.ollama_url, config.model, config.request_timeout_s)
@@ -391,7 +536,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.skip_preflight:
         print(f"Kepler zone: {config.kepler_zone}; monitor interval: {config.kepler_monitor_interval_ms} ms")
-        print(f"Questions: {len(questions)}; repetitions: {reps}; modes: {MODE_NO_THINK}/{MODE_THINK}")
+        print(
+            f"Questions: {len(questions)}; repetitions: {reps}; modes: {MODE_NO_THINK}/{MODE_THINK}; "
+            f"sampling: {args.sample_mode} (seed {sample_seed})"
+        )
 
     if not completed:
         warmup_question = questions[0]["question"]
@@ -508,8 +656,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
         lock_handle.close()
 
-    print(f"Results: {run_dir}")
-    print(json.dumps(simple_summary(records)["thinking_minus_no_thinking"], indent=2))
+    print_report(records, run_dir, args.profile, max_print_rows=args.max_print_rows)
     return 0
 
 

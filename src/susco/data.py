@@ -149,6 +149,19 @@ def load_prepared(path: str | Path = DEFAULT_OUTPUT) -> list[dict[str, Any]]:
     return rows
 
 
+def random_sample(rows: list[dict[str, Any]], n: int, seed: int = 42) -> list[dict[str, Any]]:
+    """Sample exactly ``n`` rows uniformly at random, reproducibly."""
+
+    if n <= 0:
+        return []
+    rng = random.Random(seed)
+    if n >= len(rows):
+        sampled = list(rows)
+        rng.shuffle(sampled)
+        return sampled
+    return rng.sample(rows, n)
+
+
 def stratified_sample(rows: list[dict[str, Any]], n: int, seed: int = 42) -> list[dict[str, Any]]:
     """Sample exactly ``n`` rows, proportionally across difficulty bins."""
 

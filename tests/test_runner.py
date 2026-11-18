@@ -30,6 +30,9 @@ def test_simple_summary_excludes_errors_and_computes_marginals():
     summary = simple_summary(records)
     assert summary["records"] == 8
     assert summary["errors"] == 1
+    assert summary["total"]["n"] == 8
+    assert summary["total"]["correct"] == 6
+    assert summary["total"]["energy_j"] == 100
     assert summary["by_mode"][MODE_NO_THINK]["correct"] == 2
     assert summary["by_mode"][MODE_THINK]["correct"] == 4
     extra = summary["thinking_minus_no_thinking"]
