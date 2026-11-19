@@ -1,4 +1,10 @@
-from susco.runner import MODE_NO_THINK, MODE_THINK, completed_keys, simple_summary
+from susco.runner import (
+    MODE_NO_THINK,
+    MODE_THINK,
+    completed_keys,
+    print_report,
+    simple_summary,
+)
 
 
 def _record(rep, question, mode, correct, energy, tokens=10, latency=1.0, status="correct"):
@@ -60,3 +66,47 @@ def test_completed_keys_skips_errors(tmp_path):
         encoding="utf-8",
     )
     assert completed_keys(path) == {(0, "q0", "think")}
+
+
+def test_print_report_contains_all_metric_sections(tmp_path):
+    records = [
+        _record(0, "q0", MODE_NO_THINK, True, 10, tokens=12, latency=2.0),
+        _record(0, "q0", MODE_THINK, False, 15, tokens=30, latency=3.0),
+    ]
+    summary = simple_summary(records)
+    summary["completed_requests"] = 2
+    summary["expected_requests"] = 2
+    summary["elapsed_s"] = 5.0
+
+    print_report(records, tmp_path, "test", summary=summary)
+    report = (tmp_path / "report.txt").read_text(encoding="utf-8")
+
+    for text in (
+        "Aggregate metrics",
+        "Per-repetition metrics",
+        "Thinking vs non-thinking",
+        "Correct answers:",
+        "Extra energy:",
+        "Extra tokens:",
+        "Extra latency:",
+        "Extra correct:",
+        "Extra energy per additional correct:",
+        "Energy per correct ratio",
+        "Prompt tokens total/mean:",
+        "Thinking-worth matrix",
+        "Per-question:",
+    ):
+        assert text in report
+    assert (tmp_path / "worth_matrix.csv").exists()
+    assert (tmp_path / "worth_matrix.json").exists()
+
+
+def test_print_report_write_matrix_false_skips_matrix_files(tmp_path):
+    records = [
+        _record(0, "q0", MODE_NO_THINK, True, 10),
+        _record(0, "q0", MODE_THINK, True, 15),
+    ]
+    print_report(records, tmp_path, "test", summary=simple_summary(records), write_matrix=False)
+
+    assert not (tmp_path / "worth_matrix.csv").exists()
+    assert not (tmp_path / "worth_matrix.json").exists()

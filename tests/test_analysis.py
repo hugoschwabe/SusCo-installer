@@ -19,7 +19,6 @@ def synthetic_frame():
                         "rep": rep,
                         "question_id": f"q{question}",
                         "mode": mode,
-                        "difficulty": question // 2 + 1,
                         "correct": int(correct),
                         "strict_correct": int(correct),
                         "status": "correct" if correct else "incorrect",
@@ -36,9 +35,8 @@ def synthetic_frame():
 
 def test_summarize_shapes_and_mcnemar():
     summaries = summarize(synthetic_frame(), n_boot=200)
-    assert set(summaries) == {"mode", "difficulty", "repetition", "paired", "marginal"}
+    assert set(summaries) == {"mode", "repetition", "paired", "marginal", "worth_matrix"}
     assert len(summaries["mode"]) == 2
-    assert len(summaries["difficulty"]) == 4
     assert len(summaries["repetition"]) == 4
 
     paired = summaries["paired"].set_index("metric")
@@ -68,3 +66,37 @@ def test_load_records_from_jsonl(tmp_path):
     loaded = load_records(path)
     assert len(loaded) == len(frame)
     assert set(loaded["mode"]) == {"no_think", "think"}
+
+
+def test_summarize_groups_by_subject_and_level_when_present():
+    frame = synthetic_frame()
+    frame["subject"] = ["Algebra"] * len(frame)
+    frame["level"] = [1 if i % 2 else 2 for i in range(len(frame))]
+    summaries = summarize(frame, n_boot=100)
+    assert set(summaries) == {
+        "mode",
+        "repetition",
+        "paired",
+        "marginal",
+        "worth_matrix",
+        "subject",
+        "level",
+    }
+    assert set(summaries["subject"]["subject"]) == {"Algebra"}
+    assert set(summaries["level"]["level"]) == {1, 2}
+
+
+def test_worth_matrix_has_overall_and_level_rows_with_decisions():
+    frame = synthetic_frame()
+    frame["level"] = [1 if row["question_id"] in {"q0", "q1"} else 2 for row in frame.to_dict(orient="records")]
+    matrix = summarize(frame, n_boot=20)["worth_matrix"].set_index("level")
+
+    assert matrix.index.tolist() == ["all", 1, 2]
+    assert matrix.loc["all", "scope"] == "overall"
+    assert matrix.loc[1, "no_think_correct"] == 4
+    assert matrix.loc[1, "think_correct"] == 4
+    assert not bool(matrix.loc[1, "thinking_worth_it"])
+    assert matrix.loc[2, "no_think_correct"] == 0
+    assert matrix.loc[2, "think_correct"] == 2
+    assert bool(matrix.loc[2, "thinking_worth_it"])
+    assert matrix.loc[2, "extra_energy_per_additional_correct_j"] > 0

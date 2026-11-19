@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,6 @@ NUMERIC_COLUMNS = (
     "wall_duration_s",
     "time_to_first_token_s",
     "tokens_per_second",
-    "difficulty",
-    "reasoning_steps",
     "correct",
     "strict_correct",
     "low_confidence",
@@ -32,6 +31,25 @@ NUMERIC_COLUMNS = (
 )
 
 MODES = ("no_think", "think")
+
+
+def normalize_record_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    for column in NUMERIC_COLUMNS:
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if "correct" in frame:
+        frame["correct"] = frame["correct"].fillna(0).astype(int)
+    if "strict_correct" in frame:
+        frame["strict_correct"] = frame["strict_correct"].fillna(0).astype(int)
+    if "low_confidence" in frame:
+        frame["low_confidence"] = frame["low_confidence"].fillna(0).astype(int)
+    if "mode" not in frame:
+        frame["mode"] = "unknown"
+    if "status" not in frame:
+        frame["status"] = "unknown"
+    frame["mode"] = frame["mode"].astype(str)
+    frame["status"] = frame["status"].astype(str)
+    return frame
 
 
 def load_records(path: str | Path = "results/latest") -> pd.DataFrame:
@@ -51,19 +69,7 @@ def load_records(path: str | Path = "results/latest") -> pd.DataFrame:
     if not rows:
         raise ValueError(f"{source} contains no records")
 
-    frame = pd.DataFrame(rows)
-    for column in NUMERIC_COLUMNS:
-        if column in frame:
-            frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    if "correct" in frame:
-        frame["correct"] = frame["correct"].fillna(0).astype(int)
-    if "strict_correct" in frame:
-        frame["strict_correct"] = frame["strict_correct"].fillna(0).astype(int)
-    if "low_confidence" in frame:
-        frame["low_confidence"] = frame["low_confidence"].fillna(0).astype(int)
-    frame["mode"] = frame["mode"].astype(str)
-    frame["status"] = frame.get("status", "unknown").astype(str)
-    return frame
+    return normalize_record_frame(pd.DataFrame(rows))
 
 
 def valid_records(frame: pd.DataFrame) -> pd.DataFrame:
@@ -71,13 +77,27 @@ def valid_records(frame: pd.DataFrame) -> pd.DataFrame:
     return data[data["mode"].isin(MODES)]
 
 
+def _column_sum(group: pd.DataFrame, column: str) -> float:
+    if column not in group:
+        return 0.0
+    return float(group[column].fillna(0).sum())
+
+
+def _column_mean(group: pd.DataFrame, column: str) -> float | None:
+    if column not in group or len(group) == 0:
+        return None
+    return float(group[column].mean())
+
+
 def _aggregate_group(group: pd.DataFrame) -> dict[str, Any]:
     n = len(group)
-    correct = int(group["correct"].sum()) if n else 0
-    strict = int(group["strict_correct"].sum()) if n else 0
-    energy = float(group["energy_j"].fillna(0).sum()) if n else 0.0
-    tokens = int(group["eval_count"].fillna(0).sum()) if n else 0
-    latency = float(group["wall_duration_s"].fillna(0).sum()) if n else 0.0
+    correct = int(group["correct"].sum()) if n and "correct" in group else 0
+    strict = int(group["strict_correct"].sum()) if n and "strict_correct" in group else 0
+    energy = _column_sum(group, "energy_j")
+    tokens = int(_column_sum(group, "eval_count"))
+    prompt_tokens = int(_column_sum(group, "prompt_eval_count"))
+    latency = _column_sum(group, "wall_duration_s")
+    status = group["status"].astype(str) if n and "status" in group else pd.Series(dtype=str)
     return {
         "n_requests": n,
         "n_questions": int(group["question_id"].nunique()) if n else 0,
@@ -85,15 +105,20 @@ def _aggregate_group(group: pd.DataFrame) -> dict[str, Any]:
         "accuracy": correct / n if n else None,
         "strict_correct": strict,
         "strict_accuracy": strict / n if n else None,
+        "incorrect": int((status == "incorrect").sum()),
+        "unparseable": int((status == "unparseable").sum()),
+        "truncated": int((status == "truncated").sum()),
         "energy_j_total": energy,
-        "energy_j_mean": float(group["energy_j"].mean()) if n else None,
-        "energy_j_median": float(group["energy_j"].median()) if n else None,
+        "energy_j_mean": _column_mean(group, "energy_j"),
+        "energy_j_median": float(group["energy_j"].median()) if n and "energy_j" in group else None,
         "eval_tokens_total": tokens,
-        "eval_tokens_mean": float(group["eval_count"].mean()) if n else None,
-        "prompt_tokens_mean": float(group["prompt_eval_count"].mean()) if n else None,
+        "eval_tokens_mean": _column_mean(group, "eval_count"),
+        "prompt_tokens_total": prompt_tokens,
+        "prompt_tokens_mean": _column_mean(group, "prompt_eval_count"),
         "latency_s_total": latency,
-        "latency_s_mean": float(group["wall_duration_s"].mean()) if n else None,
-        "ttft_s_mean": float(group["time_to_first_token_s"].mean()) if n else None,
+        "latency_s_mean": _column_mean(group, "wall_duration_s"),
+        "ttft_s_mean": _column_mean(group, "time_to_first_token_s"),
+        "tokens_per_second_mean": _column_mean(group, "tokens_per_second"),
         "energy_per_correct_j": energy / correct if correct else None,
         "tokens_per_correct": tokens / correct if correct else None,
         "latency_per_correct_s": latency / correct if correct else None,
@@ -296,18 +321,46 @@ def summarize(frame: pd.DataFrame, n_boot: int = 2000, seed: int = 42) -> dict[s
     data = valid_records(frame)
     if data.empty:
         raise ValueError("no successful measurement records to analyze")
-    return {
+    summaries = {
         "mode": _mode_summary(data),
-        "difficulty": _group_summary(data, "difficulty"),
         "repetition": _group_summary(data, "rep"),
         "paired": _paired_summary(data, n_boot=n_boot, seed=seed),
         "marginal": _marginal_summary(data, n_boot=n_boot, seed=seed),
     }
+    for column in ("subject", "level"):
+        if column in data and data[column].notna().any():
+            summaries[column] = _group_summary(data, column)
+    from .worth import worth_matrix
+
+    summaries["worth_matrix"] = worth_matrix(data)
+    return summaries
+
+
+def _json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, (list, tuple, set)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if pd.isna(value):
+        return None
+    return str(value)
+
+
+def frame_to_json(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    return [{key: _json_value(value) for key, value in row.items()} for row in frame.to_dict(orient="records")]
 
 
 def _frame_to_json(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    clean = frame.replace({np.nan: None, np.inf: None, -np.inf: None})
-    return clean.to_dict(orient="records")
+    return frame_to_json(frame)
 
 
 def save_summaries(
@@ -323,4 +376,8 @@ def save_summaries(
     (out / "summary.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+    if "worth_matrix" in payload:
+        (out / "worth_matrix.json").write_text(
+            json.dumps(payload["worth_matrix"], indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
     return out

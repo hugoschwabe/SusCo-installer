@@ -1,17 +1,18 @@
-# SusCo — the cost of thinking in Qwen3-1.7B on GSM8K
+# SusCo — the cost of thinking in Qwen3-1.7B on MATH-500
 
 SusCo is a local measurement project that answers two questions:
 
 1. **What does thinking mode cost?** How much extra **energy**, how many extra
    **tokens**, and how much extra **latency** does Qwen3 thinking mode use
-   compared with non-thinking mode, by difficulty level?
+   compared with non-thinking mode on MATH-500?
 2. **Where does reasoning pay off?** Where does thinking improve **energy per
    correct answer**, and what is the **extra energy per additional correct
    answer**?
 
-The experiment uses GSM8K grade-school math problems and a locally served
-Qwen3-1.7B. Every question is asked twice, once with `think=false` and once
-with `think=true`, and each request gets its own hardware energy measurement.
+The experiment uses MATH-500 competition math problems (7 subjects, levels
+1-5) and a locally served Qwen3-1.7B. Every question is asked twice, once with
+`think=false` and once with `think=true`, and each request gets its own hardware
+energy measurement.
 
 A detailed design and decision record is in [`SPEC.md`](SPEC.md).
 
@@ -23,11 +24,11 @@ A detailed design and decision record is in [`SPEC.md`](SPEC.md).
 | --- | --- |
 | Linux provisioning (`scripts/setup_linux.sh`) | Implemented; needs end-to-end validation on the target Linux host |
 | Linux verification (`scripts/verify_linux.sh`) | Implemented; independent PASS/FAIL checks |
-| GSM8K preparation | Implemented (`make data`) |
+| MATH-500 preparation | Implemented (`make data`) |
 | Ollama paired runner with energy windows | Implemented (`make test/pilot/run`) |
-| Grading (strict + SymPy equivalence) | Implemented |
+| Grading (strict + math-verify/SymPy equivalence) | Implemented |
 | Analysis and plots | Implemented (`make analyze`) |
-| Unit tests | 31 passing on macOS (non-hardware logic) |
+| Unit tests | 38 passing on macOS (non-hardware logic) |
 | End-to-end Linux measurement | Pending target-host validation |
 
 The experiment is **Linux x86_64 only** because accurate energy measurement
@@ -43,7 +44,7 @@ numbers are not comparable and are not implemented here.
 - A readable, increasing RAPL counter under `/sys/class/powercap/*-rapl:*/energy_uj`.
 - At least 8 GiB RAM and 20 GiB free disk.
 - Root/sudo for installation and service management.
-- Network access for packages, the model, and GSM8K.
+- Network access for packages, the model, and MATH-500.
 
 Virtual machines and containers are rejected unless you explicitly pass
 `--allow-virtualized`. They normally hide RAPL, which makes the energy results
@@ -65,7 +66,7 @@ cd SusCo-project
 # 1. Provision the Linux measurement host.
 make install
 
-# 2. Download and prepare GSM8K (once).
+# 2. Download and prepare MATH-500 (once).
 make data
 
 # 3. Independent installation check.
@@ -77,14 +78,17 @@ make test
 # 5. Calibration run: 100 questions, one repetition.
 make pilot
 
-# 6. Full experiment: all 1,319 questions, three repetitions.
+# 6. Full experiment: all 500 questions, three repetitions.
 make run
 
 # Optional: reproducible random subset (100 questions, seed 7, three reps).
 make run QUESTIONS=100 SEED=7
 
-# 7. Tables and plots.
+# 7. Tables, plots, and the thinking-worth matrix.
 make analyze
+
+# Or print just the matrix for the latest run.
+make matrix
 ```
 
 `make install` runs the verifier automatically at the end. It needs sudo and
@@ -135,7 +139,7 @@ Then on the server:
 ```bash
 cd /opt/SusCo-project
 make install       # provisions Docker, Kepler, Prometheus, native Ollama, venv
-make data          # downloads GSM8K
+make data          # downloads MATH-500
 make verify        # must exit 0
 make test          # 5 questions
 make pilot         # 100 questions; use this to estimate full-run duration
@@ -148,7 +152,7 @@ the Prometheus container.
 Expect the full run to take a long time on a CPU-only server. Thinking mode can
 generate far more tokens than non-thinking mode, and Hetzner dedicated servers
 have no GPU. Run `make pilot` first, measure the elapsed time, and extrapolate
-before starting 7,914 full-run requests.
+before starting 3,000 full-run requests.
 
 Kepler binds to `127.0.0.1:28282`, Prometheus to `127.0.0.1:9090`, and Ollama to
 `127.0.0.1:11434`; none needs to be exposed publicly.
@@ -173,17 +177,23 @@ Provisions the host:
 - The project `.venv` with analysis dependencies.
 - A final verification run.
 
-The installer does **not** download GSM8K; run `make data` once.
+The installer does **not** download MATH-500; run `make data` once.
 
 ### `make data`
 
-Downloads `openai/gsm8k` (test split, 1,319 rows), extracts the gold answer,
-computes the difficulty proxy, and writes:
+Downloads `HuggingFaceH4/MATH-500` (test split, 500 rows) and writes:
 
 ```text
-data/processed/gsm8k_test.jsonl
-data/processed/gsm8k_test.meta.json
+data/processed/math500_test.jsonl
+data/processed/math500_test.meta.json
 ```
+
+Each row keeps the source `unique_id`, `problem`, final `answer`, full
+`solution`, `subject`, `level`, and the extracted `gold`. The command also
+prints the subject and level distribution. Current composition: 124 Algebra,
+97 Intermediate Algebra, 82 Prealgebra, 62 Number Theory, 56 Precalculus,
+41 Geometry, 38 Counting & Probability; levels 1-5 contain 43, 90, 105, 128,
+and 134 questions.
 
 ### `make verify`
 
@@ -212,7 +222,7 @@ requests:
 | --- | ---: | ---: | ---: |
 | `make test` | 5 | 1 | 10 |
 | `make pilot` | 100 | 1 | 200 |
-| `make run` | 1,319 | 3 | 7,914 |
+| `make run` | 500 | 3 | 3,000 |
 
 To run a reproducible random subset:
 
@@ -222,8 +232,7 @@ make run QUESTIONS=100 SEED=7
 
 This selects 100 questions uniformly at random with seed 7, records the selected
 set in `results/<run>/requests.jsonl`, and stores the sampling plan in
-`config.json`. Use `SAMPLE=stratified` for the old difficulty-stratified
-selection instead of `SAMPLE=random` (the default when `QUESTIONS` is set).
+`config.json`. Without `QUESTIONS`, `make run` uses all 500 questions.
 
 Each request is measured individually:
 
@@ -237,26 +246,39 @@ Each request is measured individually:
 Requests are one at a time. Concurrent requests would make energy attribution
 ambiguous and change CPU frequency behavior.
 
-Every run prints a performance table for `no_think`, `think`, and both modes
-combined (total energy, tokens, latency, correctness, and energy per correct).
-It also prints an explicit correct-answer count line, for example
-`Correct answers: no_think 3/5, think 4/5, total 7/10`, and the
-thinking-minus-no-thinking deltas. The same counts are in `summary.json`
-under `thinking_minus_no_thinking` (`no_think_correct`, `think_correct`,
-`total_correct`). `make test` and
-`make pilot` print every per-question row; `make run` prints the first 200 rows
-by default. The full per-question table is always written to
-`results/<run>/report.txt`; use `--max-print-rows` to change the terminal limit.
+Every run prints a full performance report for `no_think`, `think`, and both
+modes combined, including correctness, strict correctness, total/mean/median
+energy, energy per correct, tokens, tokens per request/correct, latency, TTFT,
+tokens per second, prompt tokens, and low-confidence windows. It also prints a
+per-repetition table, an explicit correct-answer count line (for example
+`Correct answers: no_think 3/5, think 4/5, total 7/10`), and all
+thinking-minus-no-thinking deltas. The same metrics are in `summary.json`.
+
+After every run, the harness also writes a thinking-worth matrix with one row for
+each MATH-500 level (`1` through `5`) and one row for all questions. The matrix
+contains the full no-thinking and thinking metrics for that scope, the deltas,
+the marginal energy per additional correct answer, and a `thinking_worth_it`
+decision. The decision is conservative: thinking is marked worthwhile only when
+it produces more correct answers and the extra energy per additional correct
+answer is no larger than the no-thinking energy per correct answer, or when
+thinking is the only mode that produced correct answers.
+
+`make test` and `make pilot` print every per-question row; `make run` prints the
+first 200 rows by default. The full metrics tables, thinking-worth matrix, and
+per-question table are always written to `results/<run>/report.txt`; use
+`--max-print-rows` to change the terminal limit.
 
 ### `make analyze`
 
 Reads `results/latest` and writes to `results/latest/analysis/`:
 
-- Mode, difficulty, and repetition summaries (CSV/JSON).
+- Mode and repetition summaries (CSV/JSON).
+- Per-subject and per-level summaries (CSV/JSON) from the MATH-500 labels.
+- Thinking-worth matrix for each MATH level and all questions (CSV/JSON).
 - Paired per-question tests: Wilcoxon signed-rank and bootstrap intervals.
 - McNemar tests for paired correctness.
 - Marginal energy per additional correct answer.
-- Plots: mode bars, difficulty heatmaps, paired deltas, marginal energy.
+- Plots: mode bars, paired deltas, marginal energy.
 
 ### `make preflight`
 
@@ -280,7 +302,7 @@ Removes Python caches and `.pytest_cache`. Results are kept.
 ## How the measurement works
 
 ```text
-GSM8K (HuggingFace datasets)
+MATH-500 (HuggingFace datasets)
         │
         ▼
 Python harness on host (.venv)
@@ -338,40 +360,30 @@ selects `psys` when present, otherwise all `package-*` zones.
 - `temperature=0`, `seed=42`, `top_p=1.0`, `top_k=1`.
 - `num_predict=2048`, `num_ctx=4096`.
 - Two warm-up prompts per mode; the model stays loaded (`KEEP_ALIVE=-1`).
-- Question sampling is stratified across five difficulty bins and seeded.
+- Question sampling is seeded and reproducible.
 - Mode order is randomized per question and repetition.
 - Three full-run repetitions estimate energy/latency/system noise; at
   temperature 0 they do not estimate answer-sampling variance.
 
 ---
 
-## Difficulty levels
-
-GSM8K has no official difficulty labels. SusCo uses a transparent proxy:
-
-```text
-difficulty_raw = solution_lines + 0.25 × arithmetic_operators
-```
-
-Rows are sorted by this value and split into five equal-frequency bins
-(`1` easiest to `5` hardest). This is a proxy, not a validated human difficulty
-measure. All results are reported by these bins and the definition is restated
-with the results.
-
----
-
 ## Correctness
 
-Gold answers come from the text after the final `####` marker. Model output is
-searched in this order:
+MATH-500 ships a separate final-answer column, so `gold` is normally taken
+directly from `answer`; if it is empty, the pipeline falls back to the last
+`\boxed{...}` in `solution`. Model output is searched in this order:
 
 1. `#### <answer>`
 2. `\boxed{...}`
 3. an "answer is" / "final answer" sentence
 4. the last number or fraction in the response
 
-Answers are cleaned and parsed with SymPy. Two values are equivalent when they
-match numerically within `1e-6` or simplify to the same symbolic expression.
+The system prompt asks the model to put the final answer in `\boxed{...}`.
+Answers are compared with `math-verify`, which parses LaTeX fractions, roots,
+tuples, sets, intervals, matrices and text, with a SymPy numeric/symbolic
+fallback. Two values are equivalent when `math-verify` accepts them, when they
+match numerically within `1e-6`, or when they simplify to the same symbolic
+expression.
 
 Each request records:
 
@@ -395,16 +407,17 @@ results/run-<timestamp>-<profile>/
   config.json          # experiment, host, and run/sampling plan
   environment.json     # host, platform, CPU count, load, UTC time
   requests.jsonl       # one row per request, append-only, resumable
-  summary.json         # per-mode, per-repetition, total, marginal summary
-  report.txt           # aggregate tables + full per-question answers/metrics
+  summary.json         # per-mode, per-repetition, total, marginal, worth matrix
+  report.txt           # aggregate tables + thinking-worth matrix + per-question rows
+  worth_matrix.csv     # thinking-worth metrics for each MATH level and all questions
+  worth_matrix.json    # same matrix in JSON
 results/latest -> run-<...>/
 ```
 
 Important request fields:
 
 - **Identity:** `run_id`, `profile`, `rep`, `mode`, `think`, `question_id`.
-- **Question:** `question`, `gold`, `difficulty`, `difficulty_raw`,
-  `reasoning_steps`.
+- **Question:** `question`, `gold`, `subject`, `level`.
 - **Answer:** `prediction`, `normalized_prediction`, `normalized_gold`,
   `correct`, `strict_correct`, `status`, `content`, `thinking`.
 - **Tokens/timing:** `eval_count`, `prompt_eval_count`, Ollama duration fields,
@@ -449,7 +462,7 @@ question-level bootstrap provides a confidence interval.
 Committed defaults are in:
 
 - `configs/experiment.yaml` — model, endpoints, decoding, profiles, timing,
-  Kepler settings, difficulty bins, seeds.
+  Kepler settings, seeds.
 - `configs/host.yaml` — host defaults for CPU layout, RAPL zone, Kepler zone,
   monitor interval, model digest.
 
@@ -476,7 +489,7 @@ built-in defaults < configs/experiment.yaml < configs/host.yaml < configs/host.l
 ```
 
 CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--sample-seed`,
-`--sample-mode`, `--limit`, `--reps`) take highest precedence.
+`--limit`, `--reps`) take highest precedence.
 
 ### Useful runner commands
 
@@ -484,11 +497,11 @@ CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--sample-seed`,
 # Resume the newest unfinished run.
 .venv/bin/python -m susco.runner --profile full --resume
 
-# Limit a run for debugging (difficulty-stratified by default).
+# Limit a run for debugging (reproducible random selection).
 .venv/bin/python -m susco.runner --profile test --limit 20
 
 # Reproducible uniform random subset.
-.venv/bin/python -m susco.runner --profile full --limit 100 --sample-mode random --seed 7
+.venv/bin/python -m susco.runner --profile full --limit 100 --seed 7
 
 # Use a different model tag.
 .venv/bin/python -m susco.runner --profile test --model qwen3:1.7b
@@ -625,7 +638,7 @@ SusCo-project/
 │   └── host.local.yaml       # optional, git-ignored
 ├── data/
 │   ├── raw/
-│   └── processed/            # gsm8k_test.jsonl + meta
+│   └── processed/            # math500_test.jsonl + meta (git-ignored)
 ├── results/
 │   ├── run-*/
 │   └── latest -> run-*/
@@ -663,7 +676,7 @@ Before trusting a full run:
 - [ ] RAPL `energy_uj` and Kepler `kepler_node_cpu_joules_total` both increase.
 - [ ] `make test` produces 10 paired records with valid energy and token data.
 - [ ] `make pilot` completes 200 requests and writes `summary.json`.
-- [ ] `make run` completes 7,914 requests and can resume after interruption.
+- [ ] `make run` completes 3,000 requests and can resume after interruption.
 - [ ] `make analyze` produces summaries, tests, marginal ratios, and plots.
 - [ ] Low-confidence windows are reported, not silently discarded.
-- [ ] Results state that difficulty is a proxy and energy is CPU-domain only.
+- [ ] Results state that energy is CPU-domain only.

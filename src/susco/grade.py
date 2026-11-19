@@ -1,4 +1,4 @@
-"""Final-answer extraction and equivalence grading for GSM8K."""
+"""Final-answer extraction and equivalence grading for math datasets."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ _ANSWER_RE = re.compile(
 _NUMBER_RE = re.compile(
     r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:\s*/\s*[-+]?\d+(?:\.\d+)?)?"
 )
+_THOUSANDS_NUMBER_RE = re.compile(r"^[+-]?\d{1,3}(?:[,\s]+\d{3})+(?:\.\d+)?$")
 
 
 @dataclass(frozen=True)
@@ -68,10 +69,20 @@ def _last_boxed(text: str) -> str | None:
 
 
 def extract_gold(answer: str) -> str | None:
-    """Return the number after the final ``####`` marker."""
+    """Return the final answer from a gold string.
+
+    Supports both GSM8K-style ``#### <answer>`` markers and MATH-style
+    ``\\boxed{<answer>}`` solutions. MATH-500 also has a separate ``answer``
+    column, which is preferred by :func:`susco.data.prepare_rows`.
+    """
 
     value = _last(_HASH_RE, answer)
-    return clean_answer(value) if value else None
+    if value:
+        return clean_answer(value)
+    value = _last_boxed(answer)
+    if value:
+        return clean_answer(value)
+    return None
 
 
 def extract_prediction(text: str) -> str | None:
@@ -103,11 +114,12 @@ def clean_answer(value: str | None) -> str | None:
     text = str(value).strip()
     text = text.strip("`'\" \t\r\n")
     text = text.rstrip(".,;:!?")
-    text = text.replace("$", "").replace(",", "").strip()
+    text = text.replace("\\$", "").replace("\\!", "")
+    text = text.replace("$", "").strip()
+    if _THOUSANDS_NUMBER_RE.match(text):
+        text = re.sub(r"[,\s]", "", text)
     if not text:
         return None
-    if "=" in text:
-        text = text.rsplit("=", 1)[-1].strip()
     if text.endswith("%"):
         text = text[:-1].strip()
     return text or None
@@ -130,6 +142,8 @@ def normalize_answer(value: str | None) -> sp.Basic | str | None:
 
 def _canonical_text(value: str | None) -> str:
     cleaned = clean_answer(value) or ""
+    cleaned = cleaned.replace("\\left", "").replace("\\right", "")
+    cleaned = cleaned.replace("\\dfrac", "\\frac")
     return re.sub(r"\s+", "", cleaned).lower()
 
 
@@ -138,12 +152,45 @@ def _as_number(value: Any) -> float | None:
         if isinstance(value, sp.Basic):
             return float(sp.N(value))
         return float(str(value))
-    except (TypeError, ValueError, TypeError):
+    except (TypeError, ValueError):
+        return None
+
+
+def _math_verify_equivalent(prediction: str | None, gold: str | None) -> bool | None:
+    """Use math-verify for LaTeX-aware equivalence, when it is installed.
+
+    Returns ``None`` when the package is unavailable or cannot parse the
+    values, allowing the SymPy fallback to decide.
+    """
+
+    cleaned_pred = clean_answer(prediction)
+    cleaned_gold = clean_answer(gold)
+    if not cleaned_pred or not cleaned_gold:
+        return None
+    try:
+        from math_verify import parse, verify
+    except ImportError:  # pragma: no cover - math-verify is a declared dependency
+        return None
+
+    def parse_value(value: str) -> Any:
+        return parse("\\boxed{" + value + "}")
+
+    try:
+        parsed_pred = parse_value(cleaned_pred)
+        parsed_gold = parse_value(cleaned_gold)
+        if not parsed_pred or not parsed_gold:
+            return None
+        return bool(verify(parsed_gold, parsed_pred))
+    except Exception:
         return None
 
 
 def answers_equivalent(prediction: str | None, gold: str | None, tol: float = 1e-6) -> bool:
-    """Compare two answers numerically or symbolically."""
+    """Compare two answers numerically, symbolically or as LaTeX."""
+
+    math_verify_result = _math_verify_equivalent(prediction, gold)
+    if math_verify_result is not None:
+        return math_verify_result
 
     left = normalize_answer(prediction)
     right = normalize_answer(gold)
@@ -162,16 +209,18 @@ def answers_equivalent(prediction: str | None, gold: str | None, tol: float = 1e
 
 
 def grade(prediction: str | None, gold: str | None, done_reason: str | None = None) -> GradeResult:
-    """Grade a prediction against the GSM8K gold answer."""
+    """Grade a prediction against a MATH-500 gold answer."""
 
+    raw_prediction = prediction
     if prediction and any(
         marker in prediction.lower()
-        for marker in ("####", "\\boxed", "answer is", "final answer")
+        for marker in ("####", "\\boxed", "answer is", "answer:", "final answer")
     ):
         extracted = extract_prediction(prediction)
         if extracted:
             prediction = extracted
 
+    extractable = extract_prediction(raw_prediction) if raw_prediction else None
     normalized_gold = normalize_answer(gold)
     normalized_pred = normalize_answer(prediction)
     strict = _canonical_text(prediction) == _canonical_text(gold) and bool(
@@ -181,12 +230,10 @@ def grade(prediction: str | None, gold: str | None, done_reason: str | None = No
 
     if done_reason == "length":
         status = "truncated"
-    elif normalized_pred is None:
+    elif extractable is None:
         status = "unparseable"
     elif correct:
         status = "correct"
-    elif isinstance(normalized_pred, str):
-        status = "unparseable"
     else:
         status = "incorrect"
 

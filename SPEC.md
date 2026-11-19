@@ -1,6 +1,6 @@
 # SusCo — Specification
 
-**Project:** Measuring the energy, token, and latency cost of thinking mode in Qwen3-1.7B on GSM8K
+**Project:** Measuring the energy, token, and latency cost of thinking mode in Qwen3-1.7B on MATH-500
 **Status:** Measurement pipeline implemented; Linux provisioning and verification scripts implemented; end-to-end validation on Linux pending
 **Last updated:** 2026-11-17
 
@@ -12,19 +12,22 @@ SusCo measures the marginal cost of chain-of-thought "thinking" mode relative to
 
 The project answers two research questions:
 
-1. **Cost of thinking.** How much additional energy, how many additional tokens, and how much extra latency does thinking mode cost compared with non-thinking mode, across task types and difficulty levels?
+1. **Cost of thinking.** How much additional energy, how many additional tokens, and how much extra latency does thinking mode cost compared with non-thinking mode on MATH-500?
 2. **Where reasoning pays off.** Where does reasoning improve *energy per correct answer*, and what is the *extra energy per additional correct answer*?
 
 ### 1.1 Scope
 
-- **Task family:** GSM8K grade-school math word problems only.
-- **Task types:** not varied in the current scope. GSM8K is the single task type.
-- **Difficulty levels:** five equal-frequency bins derived from a reasoning-length proxy (see §7.2).
+- **Task family:** MATH-500 competition math problems, spanning 7 subjects.
+- **Task types and difficulty:** MATH-500 provides native `subject` and `level`
+  (1-5) labels. Every prepared question and request record carries both, and
+  the analysis emits per-subject and per-level summaries in addition to the
+  overall mode comparison. The thinking-worth matrix answers whether thinking is
+  worthwhile for each difficulty level and for all questions combined.
 - **Model:** `qwen3:1.7b` served by native Ollama, pinned by digest for a run.
 - **Modes:** paired `think=false` (`no_think`) and `think=true` (`think`) requests for every question.
 - **Platform:** bare-metal Linux, `x86_64`, with readable RAPL hardware energy counters.
 
-Out of scope for the current implementation: MATH-500, TriviaQA, multi-task comparisons, LLM-as-judge grading, manual reasoning audits, GPU energy, and macOS-comparable measurements.
+Out of scope for the current implementation: other benchmarks, cross-benchmark comparisons, LLM-as-judge grading, manual reasoning audits, GPU energy, and macOS-comparable measurements.
 
 ---
 
@@ -32,7 +35,7 @@ Out of scope for the current implementation: MATH-500, TriviaQA, multi-task comp
 
 ### 2.1 Paired within-question design
 
-Every question is asked in both modes. Mode order is randomized per question and repetition using a deterministic seed. This controls for question difficulty and ordering effects, and enables paired statistics.
+Every question is asked in both modes. Mode order is randomized per question and repetition using a deterministic seed. This controls for question variation and ordering effects, and enables paired statistics.
 
 For each question `q`, repetition `r`, and mode `m ∈ {no_think, think}`, the pipeline records one request row containing correctness, token counts, latency, energy, and metadata.
 
@@ -42,9 +45,9 @@ For each question `q`, repetition `r`, and mode `m ∈ {no_think, think}`, the p
 | --- | ---: | ---: | --- |
 | `test` | 5 | 1 | End-to-end smoke test (`make test`) |
 | `pilot` | 100 | 1 | Calibration and variance check |
-| `full` | all 1,319 GSM8K test rows | 3 | Primary experiment |
+| `full` | all 500 MATH-500 test rows | 3 | Primary experiment |
 
-Full-run requests: `1319 × 3 × 2 = 7,914`.
+Full-run requests: `500 × 3 × 2 = 3,000`.
 
 ### 2.3 Repetitions
 
@@ -54,7 +57,7 @@ Between repetitions, the runner waits `inter_repetition_s` (default 60 s) to let
 
 ### 2.4 Sampling
 
-By default, questions are sampled with stratification over the five difficulty bins, preserving the overall proportion and returning exactly the requested count. `--sample-mode random` selects uniformly at random instead, which is what `make run QUESTIONS=n SEED=y` uses. The same sampled question set is used across repetitions. Selection is driven by `--sample-seed`, falling back to `--seed`, then `sample_seed: 42`, so runs are reproducible.
+Questions are sampled uniformly at random without replacement, returning exactly the requested count. The full run uses all 500 questions. The same sampled question set is used across repetitions. Selection is driven by `--sample-seed`, falling back to `--seed`, then `sample_seed: 42`, so runs are reproducible.
 
 ### 2.5 Warm-up
 
@@ -77,7 +80,7 @@ Before measurement, two warm-up prompts per mode run without energy attribution.
 ### 3.1 Selected stack
 
 ```text
-GSM8K (HuggingFace datasets)
+MATH-500 (HuggingFace datasets)
         │
         ▼
 Python harness on host (.venv)
@@ -104,8 +107,8 @@ Prometheus (Docker, host network, 1 s scrape)  ← operational observability onl
 | Harness | Python in project `.venv` on host | Direct access to Kepler endpoint and Ollama; minimal interference |
 | Per-request energy | Direct Kepler scrape delta | Avoids Prometheus scrape/query alignment error at request timescales |
 | Concurrency | Serialized, one request at a time | Required for unambiguous energy attribution |
-| Correctness | Final-answer extraction + SymPy equivalence | Robust to formatting; no LLM judge |
-| Task scope | GSM8K only | Keeps the study focused and statistically tractable |
+| Correctness | Final-answer extraction + math-verify/SymPy equivalence | LaTeX-aware and robust to formatting; no LLM judge |
+| Task scope | MATH-500 only | Keeps the study focused and statistically tractable |
 
 ### 3.3 Rejected alternatives
 
@@ -182,7 +185,10 @@ A one-time check compares the Kepler counter delta against a raw RAPL delta over
 
 ### 5.1 Gold answers
 
-GSM8K gold answers end with `#### <number>`. `extract_gold` takes the text after the final marker and normalizes it.
+MATH-500 provides a separate final-answer column. `prepare_rows` takes `gold`
+from `answer` and falls back to the last balanced `\boxed{...}` in `solution`
+when `answer` is empty. `extract_gold` supports both `#### <answer>` and
+`\boxed{<answer>}` markers for generic inputs.
 
 ### 5.2 Prediction extraction
 
@@ -193,25 +199,28 @@ For model output, `extract_prediction` uses this preference order:
 3. The value in an "answer is" / "final answer" sentence.
 4. The last number or fraction in the response.
 
-The system prompt instructs the model to end with a line of the form `#### <number>`.
+The system prompt instructs the model to put its final answer in `\boxed{...}`
+and not to put anything after it.
 
 ### 5.3 Normalization and equivalence
 
-- Strip whitespace, backticks, quotes, trailing punctuation, currency symbols, and thousands separators.
+- Strip whitespace, backticks, quotes, trailing punctuation, currency symbols, and digit-group commas.
 - If the value contains `=`, keep the right-hand side.
 - Remove a trailing `%`.
-- Parse with SymPy using implicit multiplication and `^` as exponent.
-- Compare numerically with tolerance `1e-6`, or symbolically when a numeric conversion is not possible.
+- Compare with `math-verify`, which parses LaTeX fractions, roots, tuples,
+  sets, intervals, matrices, `\text{...}` and numeric expressions.
+- Fall back to SymPy using implicit multiplication and `^` as exponent, with a
+  numeric tolerance of `1e-6` or symbolic simplification.
 
 ### 5.4 Reported correctness
 
 For every request:
 
-- `correct`: symbolic/numeric equivalence to gold.
+- `correct`: math-verify or SymPy equivalence to gold.
 - `strict_correct`: exact canonical text equality after cleanup.
 - `status`: `correct`, `incorrect`, `unparseable`, `truncated`, or `error`.
 - `truncated` is assigned when Ollama finishes with `done_reason == "length"`.
-- A prediction that normalizes to non-numeric text is `unparseable`.
+- A prediction with no extractable final answer is `unparseable`.
 
 Primary endpoint: `correct`. Secondary endpoint: `strict_correct`.
 
@@ -223,40 +232,34 @@ No LLM judge and no manual reasoning audit are used in the current scope.
 
 ### 6.1 Dataset preparation
 
-Source: HuggingFace `openai/gsm8k`, configuration `main`, split `test` (1,319 rows). The repository stores parquet only; the pipeline uses the `datasets` library.
+Source: HuggingFace `HuggingFaceH4/MATH-500`, split `test` (500 rows). The
+pipeline uses the `datasets` library. The dataset contains 7 subjects and
+native levels 1-5: Algebra 124, Intermediate Algebra 97, Prealgebra 82,
+Number Theory 62, Precalculus 56, Geometry 41, Counting & Probability 38;
+levels 1-5 contain 43, 90, 105, 128 and 134 questions.
 
 Prepared JSONL row fields:
 
 ```json
 {
-  "id": "test-0",
+  "id": "test/precalculus/807.json",
   "question": "...",
   "answer": "...",
+  "solution": "...",
   "gold": "...",
-  "reasoning_steps": 5,
-  "difficulty_raw": 6.25,
-  "difficulty": 3
+  "subject": "Precalculus",
+  "level": 2
 }
 ```
 
-Output: `data/processed/gsm8k_test.jsonl`, with a sidecar `.meta.json`.
+Output: `data/processed/math500_test.jsonl`, with a sidecar `.meta.json`.
 
-### 6.2 Difficulty proxy
-
-GSM8K has no official difficulty labels. The project uses a transparent proxy:
-
-```text
-difficulty_raw = number_of_solution_lines + 0.25 × arithmetic_operator_count
-```
-
-Rows are sorted by `difficulty_raw` and split into five equal-frequency bins (`1` easiest to `5` hardest). The proxy is a design choice, not a validated difficulty measure; results are always reported by the proxy bins.
-
-### 6.3 Request record
+### 6.2 Request record
 
 Each line of `results/<run>/requests.jsonl` is one request:
 
 - **Identity:** `run_id`, `profile`, `rep`, `mode`, `think`, `question_id`.
-- **Question:** `question`, `gold`, `difficulty`, `difficulty_raw`, `reasoning_steps`.
+- **Question:** `question`, `gold`, `subject`, `level`.
 - **Answer:** `prediction`, `normalized_prediction`, `normalized_gold`, `correct`, `strict_correct`, `status`, `content`, `thinking`.
 - **Tokens and timing:** `content_chars`, `thinking_chars`, `eval_count`, `prompt_eval_count`, Ollama duration fields (`total_duration_ns`, `load_duration_ns`, `prompt_eval_duration_ns`, `eval_duration_ns`), `wall_duration_s`, `time_to_first_token_s`, `tokens_per_second`, `done_reason`.
 - **Energy:** `energy_j`, `energy_raw_j`, `energy_valid`, `idle_power_w`, `idle_energy_j`, `request_window_s`, `counter_start_j`, `counter_end_j`, `energy_zones`, `low_confidence`, `energy_note`.
@@ -264,15 +267,17 @@ Each line of `results/<run>/requests.jsonl` is one request:
 
 `eval_count` includes thinking tokens. Token cost is therefore directly comparable across modes.
 
-### 6.4 Run artifacts
+### 6.3 Run artifacts
 
 ```text
 results/run-<timestamp>-<profile>/
   config.json        # full experiment, host, and run/sampling plan
   environment.json   # hostname, platform, CPU count, loadavg, UTC time
   requests.jsonl     # one row per request, append-only, resumable
-  summary.json       # per-mode, per-repetition, total, marginal summary
-  report.txt         # aggregate tables + full per-question answers/metrics
+  summary.json       # per-mode, per-repetition, total, delta, and worth-matrix metrics
+  report.txt         # all metric tables + thinking-worth matrix + per-question rows
+  worth_matrix.csv   # thinking-worth metrics for each MATH level and all questions
+  worth_matrix.json  # same matrix in JSON
 results/latest -> run-<...>/
 ```
 
@@ -294,7 +299,7 @@ By mode:
 - Energy per correct answer, tokens per correct answer, latency per correct answer.
 - Low-confidence rate.
 
-By mode × difficulty bin, and by mode × repetition.
+By mode, by mode × repetition, and by mode × subject/level when those labels are present.
 
 ### 7.2 Marginal cost of thinking
 
@@ -309,7 +314,11 @@ extra_energy_per_additional_correct_j = extra_energy_j / extra_correct
 energy_per_correct_ratio = energy_per_correct(think) / energy_per_correct(no_think)
 ```
 
-The run report prints `Correct answers: no_think n/N, think n/N, total n/N`, and `summary.json` stores the corresponding `no_think_correct`, `think_correct`, and `total_correct` fields. The marginal ratio is `null` when there are no additional correct answers. Question-level bootstrap resampling provides a confidence interval for the marginal ratio.
+The run report prints `Correct answers: no_think n/N, think n/N, total n/N`, and `summary.json` stores the corresponding `no_think_correct`, `think_correct`, and `total_correct` fields. The marginal ratio is `null` when there are no additional correct answers. `report.txt` and the terminal output include all aggregate and per-repetition metrics; question-level bootstrap resampling in `make analyze` provides a confidence interval for the marginal ratio.
+
+The thinking-worth matrix is written automatically after each run and by `make analyze`. It has one row for each MATH-500 level and one row for all questions. Each row stores the full aggregate metrics for `no_think` and `think`, the deltas, `energy_per_correct_ratio`, `extra_energy_per_additional_correct_j`, `thinking_worth_it`, and `worth_reason`.
+
+`thinking_worth_it` is true only when thinking produces more correct answers and the extra energy per additional correct answer is no larger than the no-thinking energy per correct answer. If no-thinking has zero correct answers but thinking has positive correct answers, the row is marked worthwhile. If thinking produces the same or fewer correct answers, it is not marked worthwhile unless it used no extra energy.
 
 ### 7.3 Statistical tests
 
@@ -322,12 +331,12 @@ The run report prints `Correct answers: no_think n/N, think n/N, total n/N`, and
 
 `python -m susco.analysis.report` writes to `results/latest/analysis/`:
 
-- CSV summaries: mode, difficulty, repetition, paired tests, marginal ratios.
+- CSV summaries: mode, repetition, subject, level, worth matrix, paired tests, marginal ratios.
 - `summary.json`.
+- `worth_matrix.csv` and `worth_matrix.json`.
 - Plots:
   - Mode comparison bars (energy, tokens, latency, accuracy).
-  - Difficulty heatmaps (energy per correct, accuracy).
-  - Paired delta bars by difficulty.
+  - Paired delta bars.
   - Marginal energy per additional correct answer.
 
 Matplotlib uses the non-interactive `Agg` backend.
@@ -337,7 +346,6 @@ Matplotlib uses the non-interactive `Agg` backend.
 - Primary claims use idle-corrected `energy_j` on valid, non-low-confidence rows.
 - Low-confidence windows are reported, not silently dropped; sensitivity analysis compares included vs excluded rows.
 - Accuracy is reported both as symbolic-equivalent and strict match.
-- Difficulty effects are reported by proxy bin, with the proxy definition restated.
 - No claim is made about absolute wall-socket energy; RAPL covers CPU package/psys domains only.
 
 ---
@@ -356,7 +364,7 @@ SusCo-project/
 │   └── host.local.yaml       # generated by installer, git-ignored
 ├── data/
 │   ├── raw/
-│   └── processed/            # gsm8k_test.jsonl + meta
+│   └── processed/            # math500_test.jsonl + meta
 ├── results/
 │   ├── run-*/
 │   └── latest -> run-*/
@@ -368,7 +376,7 @@ SusCo-project/
 │   ├── __main__.py           # python -m susco
 │   ├── cli.py                # run/data/analyze/preflight dispatch
 │   ├── config.py             # Config, HostConfig, YAML overlays
-│   ├── data.py               # GSM8K download, difficulty, stratification
+│   ├── data.py               # MATH-500 download and reproducible sampling
 │   ├── grade.py              # extraction, normalization, equivalence
 │   ├── ollama_client.py      # streaming /api/chat, think toggle, timings
 │   ├── preflight.py          # dataset/model/Kepler/Prometheus/host checks
@@ -393,12 +401,12 @@ SusCo-project/
 Committed defaults:
 
 - Model and endpoints: `qwen3:1.7b`, Ollama `127.0.0.1:11434`, Kepler `127.0.0.1:28282/metrics`, Prometheus `127.0.0.1:9090`.
-- Paths: `data/processed/gsm8k_test.jsonl`, `results`.
+- Paths: `data/processed/math500_test.jsonl`, `results`.
 - Sampling: temperature `0`, seed `42`, `top_p` `1.0`, `top_k` `1`, `num_predict` `2048`, `num_ctx` `4096`, `num_gpu` `0`.
 - Profile sizes: test `5 × 1`, pilot `100 × 1`, full all rows `× 3`.
 - Timing: idle window `1 s`, inter-request `1 s`, inter-repetition `60 s`, timeout `1800 s`, warm-up `2` per mode.
 - Energy: zone `package`, monitor interval `100 ms`, scrape timeout `3 s`, low-confidence factor `5`.
-- Difficulty bins `5`, sample seed `42`.
+- Sample seed `42`.
 
 ### 9.2 `configs/host.yaml` and `configs/host.local.yaml`
 
@@ -416,7 +424,7 @@ Committed defaults:
 built-in defaults < configs/experiment.yaml < configs/host.yaml < configs/host.local.yaml
 ```
 
-CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--sample-seed`, `--sample-mode`, `--limit`, `--reps`) take highest precedence.
+CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--sample-seed`, `--limit`, `--reps`) take highest precedence.
 
 ---
 
@@ -426,14 +434,15 @@ CLI overrides (`--model`, `--kepler-zone`, `--seed`, `--sample-seed`, `--sample-
 
 | Target | Action |
 | --- | --- |
-| `make install` | Provision the Linux host (Docker, Kepler, Prometheus, native Ollama, venv, model, data) |
+| `make install` | Provision the Linux host (Docker, Kepler, Prometheus, native Ollama, venv, model) |
 | `make verify` | Run the independent verifier |
 | `make test` | Five-question end-to-end smoke run |
 | `make pilot` | 100-question pilot, one repetition |
-| `make run` | Full GSM8K run, three repetitions; `QUESTIONS=n SEED=n` selects a reproducible random subset |
+| `make run` | Full MATH-500 run, three repetitions; `QUESTIONS=n SEED=n` selects a reproducible random subset |
 | `make analyze` | Analyze `results/latest` and write tables/plots |
+| `make matrix` | Print the thinking-worth matrix for `results/latest` |
 | `make unit` | Run `pytest` |
-| `make data` | Download and prepare GSM8K |
+| `make data` | Download, prepare and summarize MATH-500 |
 | `make preflight` | Check services, model, dataset, and Kepler |
 | `make restore-cpu` | Restore the saved CPU governor/turbo state |
 | `make clean` | Remove Python caches; results are kept |
@@ -457,7 +466,6 @@ Before handing over to Python, the wrapper:
 --host-config PATH     host overlay
 --profile test|pilot|full
 --limit N              override question count
---sample-mode MODE     random or stratified question selection (default stratified)
 --sample-seed N        seed for question selection
 --reps N               override repetitions
 --out DIR              explicit run directory
@@ -500,7 +508,7 @@ Responsibilities:
 - Install Kepler in host mode as a systemd service (default) or via Helm in kind mode.
 - Install Prometheus as a host-network Docker container.
 - Write `configs/host.local.yaml` with detected values.
-- Prepare the GSM8K dataset.
+- Prepare the MATH-500 dataset.
 - Run the verifier automatically.
 
 Key flags: `--yes`, `--verify-only`, `--restore-cpu`, `--allow-virtualized`, `--allow-no-rapl`, `--allow-unsupported-arch`, `--no-cpu-tuning`, `--kepler-mode host|kind`, `--model`, `--ollama-cpus`, `--cluster-name`, `--install-dir`, and the `--skip-*` family.
@@ -552,14 +560,13 @@ Independent PASS/FAIL/WARN/SKIP checks with a non-zero exit on required failures
 
 1. **RAPL scope.** RAPL measures CPU package/psys domains, not wall-socket power. It excludes PSU losses, most DRAM on some platforms, fans, and peripherals. Results are suitable for relative mode comparison on the same host, not absolute energy claims.
 2. **Kepler sampling.** A 100 ms interval still quantizes request windows. Very short requests are flagged low-confidence. Idle subtraction assumes idle power is stable during the window.
-3. **Single model and task.** Findings apply to Qwen3-1.7B on GSM8K and may not generalize to other models or task families.
-4. **Difficulty proxy.** The line/operator proxy is not an official difficulty label and may correlate imperfectly with human-perceived difficulty.
-5. **Correctness.** Final-answer equivalence does not verify the reasoning process. A correct answer can come from flawed reasoning; an incorrect final answer can come from a mostly correct solution.
-6. **Deterministic decoding.** At `temperature=0`, repetitions do not estimate answer-sampling variance. They estimate energy/latency/system variance.
-7. **CPU-only.** GPU and Apple Silicon paths are excluded. `num_gpu=0` forces CPU inference; GPU energy is not measured.
-8. **Host noise.** Background load, thermal throttling, and frequency scaling remain threats despite CPU tuning and low-confidence flags.
-9. **Kepler version.** Kepler 0.13.0 is amd64-only. ARM64 hosts cannot use the accurate path.
-10. **GSM8K size.** 1,319 test questions limit statistical power for small difficulty-bin effects; paired designs and bootstrap intervals mitigate but do not eliminate this.
+3. **Single model and task.** Findings apply to Qwen3-1.7B on MATH-500 and may not generalize to other models or task families.
+4. **Correctness.** Final-answer equivalence does not verify the reasoning process. A correct answer can come from flawed reasoning; an incorrect final answer can come from a mostly correct solution.
+5. **Deterministic decoding.** At `temperature=0`, repetitions do not estimate answer-sampling variance. They estimate energy/latency/system variance.
+6. **CPU-only.** GPU and Apple Silicon paths are excluded. `num_gpu=0` forces CPU inference; GPU energy is not measured.
+7. **Host noise.** Background load, thermal throttling, and frequency scaling remain threats despite CPU tuning and low-confidence flags.
+8. **Kepler version.** Kepler 0.13.0 is amd64-only. ARM64 hosts cannot use the accurate path.
+9. **MATH-500 size.** 500 test questions limit statistical power for small subgroup effects; paired designs and bootstrap intervals mitigate but do not eliminate this.
 
 ---
 
@@ -573,20 +580,19 @@ Independent PASS/FAIL/WARN/SKIP checks with a non-zero exit on required failures
 | 4 | Kepler only for energy | Direct RAPL, model-based estimates | Single normalized source, zone handling, process metrics |
 | 5 | Direct scrape for per-request energy | Prometheus range queries | 100 ms windows vs 1 s scrape/query alignment |
 | 6 | Serialized requests | Locust concurrency | Unambiguous energy attribution and stable frequency behavior |
-| 7 | GSM8K only | MATH-500, TriviaQA, multi-task | Focused, tractable, reproducible scope |
-| 8 | Paired modes per question | Independent groups | Controls question difficulty; enables McNemar and paired tests |
-| 9 | Full run = 1,319 × 3 reps | More reps, fewer questions | Covers the benchmark; repetitions estimate system noise |
-| 10 | Five proxy difficulty bins | Official labels (none exist) | Transparent, reproducible stratification |
-| 11 | Symbolic final-answer grading | Exact match only, LLM judge | Robust to formatting without subjective judging |
-| 12 | Report strict and symbolic accuracy | One correctness metric | Shows formatting sensitivity alongside semantic correctness |
-| 13 | Idle baseline subtraction | Raw counter delta | Removes non-request background energy |
-| 14 | 5× monitor interval low-confidence rule | No confidence flag | Makes quantization risk visible |
-| 15 | Kepler/RAPL self-check warn-only | Fail install | Preserves measurement path while surfacing misconfiguration |
-| 16 | CPU pinning chosen at install | Hard-coded cores | Host topology is unknown until installation |
-| 17 | Model digest recorded and checked | Tag only | Tags are mutable; digest guarantees the measured model |
-| 18 | No GPU path | GPU + CPU comparison | Scope and measurement-control complexity |
+| 7 | MATH-500 only | GSM8K, TriviaQA, multi-task | Competition-level breadth, native subject and level labels, focused scope |
+| 8 | Paired modes per question | Independent groups | Controls question variation; enables McNemar and paired tests |
+| 9 | Full run = 500 × 3 reps | More reps, fewer questions | Covers the benchmark; repetitions estimate system noise |
+| 10 | Symbolic final-answer grading | Exact match only, LLM judge | Robust to formatting without subjective judging |
+| 11 | Report strict and symbolic accuracy | One correctness metric | Shows formatting sensitivity alongside semantic correctness |
+| 12 | Idle baseline subtraction | Raw counter delta | Removes non-request background energy |
+| 13 | 5× monitor interval low-confidence rule | No confidence flag | Makes quantization risk visible |
+| 14 | Kepler/RAPL self-check warn-only | Fail install | Preserves measurement path while surfacing misconfiguration |
+| 15 | CPU pinning chosen at install | Hard-coded cores | Host topology is unknown until installation |
+| 16 | Model digest recorded and checked | Tag only | Tags are mutable; digest guarantees the measured model |
+| 17 | No GPU path | GPU + CPU comparison | Scope and measurement-control complexity |
 | 19 | Prometheus retained but not primary | Remove Prometheus | Useful for readiness/operational checks and dashboards |
-| 20 | CLUE optional | CLUE as primary runner | CLUE targets TeaStore and 10 s sampling; not suitable for per-request GSM8K timing |
+| 20 | CLUE optional | CLUE as primary runner | CLUE targets TeaStore and 10 s sampling; not suitable for per-request MATH-500 timing |
 
 ---
 
@@ -594,23 +600,24 @@ Independent PASS/FAIL/WARN/SKIP checks with a non-zero exit on required failures
 
 Implemented and unit-tested:
 
-- GSM8K preparation, difficulty bins, stratified sampling.
-- Final-answer extraction, SymPy normalization, strict and symbolic grading.
+- MATH-500 preparation, subject/level metadata, dataset statistics, and reproducible random sampling.
+- Final-answer extraction, math-verify/SymPy equivalence, strict and symbolic grading.
 - Ollama streaming client with `think` toggle and timing/token capture.
 - Kepler metric parsing, non-overlapping zone selection, counter deltas.
 - Direct pre/post-request energy measurement with idle subtraction and confidence flags.
 - Paired runner with JSONL, resume, locking, warm-up, progress bar, and summaries.
-- Analysis metrics: mode/difficulty/repetition aggregates, McNemar, Wilcoxon, bootstrap, marginal energy.
+- Analysis metrics: mode/repetition/subject/level aggregates, McNemar, Wilcoxon, bootstrap, marginal energy.
 - Report generation with CSVs and plots.
 - Linux setup and verification scripts.
-- 31 unit tests passing on macOS (non-hardware logic).
+- 38 unit tests passing on macOS (non-hardware logic).
 
 Known gaps / pending Linux validation:
 
-- The installer and verifier have not been executed end-to-end on the target Linux host in this environment.
-- Setup must write `configs/host.local.yaml`, perform topology-based CPU pinning selection, and prepare GSM8K data as described in §11.1.
+- The MATH-500 dataset swap and grading changes have not yet been exercised in a full end-to-end run on the Linux host.
+- Setup must write `configs/host.local.yaml` and perform topology-based CPU pinning selection.
+- Dataset preparation is deliberately separate: run `make data`.
 - The installer's Kepler/RAPL cross-check is specified but not yet implemented.
-- A synthetic end-to-end analysis/report smoke test should be added.
+- A synthetic analysis/report smoke test is covered by unit tests.
 
 ---
 
@@ -622,7 +629,7 @@ The project is complete when:
 2. `make verify` reports no required failures, including increasing RAPL and Kepler counters.
 3. `make test` completes five paired questions with valid energy and token records.
 4. `make pilot` completes 100 questions and writes `summary.json`.
-5. `make run` completes 7,914 requests with resume support and three repetitions.
-6. `make analyze` produces mode/difficulty/repetition tables, paired tests, marginal energy ratios, and plots.
+5. `make run` completes 3,000 requests with resume support and three repetitions.
+6. `make analyze` produces mode/repetition tables, paired tests, marginal energy ratios, the thinking-worth matrix, and plots.
 7. Every request row records model digest, zone, monitor interval, raw and idle-corrected energy, tokens, latency, correctness, and confidence flags.
 8. Results answer both research questions with uncertainty estimates and explicit low-confidence reporting.

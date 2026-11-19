@@ -1,84 +1,94 @@
 from susco.data import (
-    assign_difficulty,
-    difficulty_raw,
+    dataset_stats,
     load_prepared,
     prepare_rows,
     random_sample,
-    reasoning_steps,
-    stratified_sample,
 )
 
 
 def _raw_rows(n=10):
     return [
         {
-            "id": f"test-{i}",
-            "question": f"question {i}",
-            "answer": "\n".join(["step"] * (i + 1)) + f"\n#### {i}",
+            "unique_id": f"test/algebra/{i}.json",
+            "problem": f"question {i}",
+            "answer": str(i),
+            "solution": f"work\n\\boxed{{{i}}}",
+            "subject": "Algebra",
+            "level": (i % 5) + 1,
         }
         for i in range(n)
     ]
 
 
-def test_reasoning_steps_and_proxy():
-    solution = "add 1+1\nsubtract 2-1\n#### 4"
-    assert reasoning_steps(solution) == 2
-    assert difficulty_raw(solution) > 2
-
-
-def test_assign_difficulty_is_balanced_and_in_range():
-    rows = assign_difficulty(_raw_rows(10), bins=5)
-    assert all(1 <= row["difficulty"] <= 5 for row in rows)
-    counts = {level: sum(row["difficulty"] == level for row in rows) for level in range(1, 6)}
-    assert set(counts.values()) == {2}
-
-
-def test_prepare_rows_extracts_gold():
+def test_prepare_rows_extracts_math500_fields():
     rows = prepare_rows(
-        [{"question": "q", "answer": "work\n#### 1,234"}],
-        bins=1,
+        [
+            {
+                "unique_id": "test/precalculus/807.json",
+                "problem": "Convert the point.",
+                "answer": r"\left( 3, \frac{\pi}{2} \right)",
+                "solution": r"Therefore, $\boxed{\left( 3, \frac{\pi}{2} \right)}$.",
+                "subject": "Precalculus",
+                "level": 2,
+            }
+        ],
     )
-    assert rows[0]["id"] == "test-0"
-    assert rows[0]["gold"] == "1234"
-    assert rows[0]["difficulty"] == 1
+    row = rows[0]
+    assert row["id"] == "test/precalculus/807.json"
+    assert row["gold"] == r"\left( 3, \frac{\pi}{2} \right)"
+    assert row["subject"] == "Precalculus"
+    assert row["level"] == 2
+    assert set(row) == {"id", "question", "answer", "solution", "gold", "subject", "level"}
 
 
-def test_stratified_sample_returns_exact_size():
-    rows = assign_difficulty(_raw_rows(50), bins=5)
-    sample = stratified_sample(rows, 12, seed=7)
-    assert len(sample) == 12
-    assert len({row["id"] for row in sample}) == 12
+def test_prepare_rows_falls_back_to_boxed_solution():
+    rows = prepare_rows(
+        [
+            {
+                "unique_id": "test/algebra/1.json",
+                "problem": "q",
+                "answer": "",
+                "solution": "work\n\\boxed{\\frac{14}{3}}",
+                "subject": "Algebra",
+                "level": 3,
+            }
+        ],
+    )
+    assert rows[0]["gold"] == r"\frac{14}{3}"
+
+
+def test_dataset_stats_counts_subjects_and_levels():
+    stats = dataset_stats(prepare_rows(_raw_rows(10)))
+    assert stats["rows"] == 10
+    assert stats["subjects"] == {"Algebra": 10}
+    assert stats["levels"] == {"1": 2, "2": 2, "3": 2, "4": 2, "5": 2}
+    assert stats["missing_gold"] == 0
+    assert stats["duplicate_ids"] == 0
 
 
 def test_random_sample_is_reproducible_and_exact_size():
-    rows = assign_difficulty(_raw_rows(50), bins=5)
+    rows = _raw_rows(50)
     first = random_sample(rows, 12, seed=7)
     second = random_sample(rows, 12, seed=7)
     other = random_sample(rows, 12, seed=8)
     assert len(first) == 12
-    assert [row["id"] for row in first] == [row["id"] for row in second]
-    assert [row["id"] for row in first] != [row["id"] for row in other]
+    assert [row["unique_id"] for row in first] == [row["unique_id"] for row in second]
+    assert [row["unique_id"] for row in first] != [row["unique_id"] for row in other]
 
 
 def test_random_sample_all_rows_when_n_is_large():
-    rows = assign_difficulty(_raw_rows(8), bins=4)
+    rows = _raw_rows(8)
     sample = random_sample(rows, 100, seed=1)
-    assert len(sample) == 8
-
-
-def test_stratified_sample_all_rows_when_n_is_large():
-    rows = assign_difficulty(_raw_rows(8), bins=4)
-    sample = stratified_sample(rows, 100, seed=1)
     assert len(sample) == 8
 
 
 def test_load_prepared_round_trip(tmp_path):
     path = tmp_path / "rows.jsonl"
-    rows = prepare_rows(_raw_rows(3), bins=3)
+    rows = prepare_rows(_raw_rows(3))
     path.write_text(
         "\n".join(__import__("json").dumps(row) for row in rows) + "\n",
         encoding="utf-8",
     )
     loaded = load_prepared(path)
     assert len(loaded) == 3
-    assert loaded[0]["id"] == "test-0"
+    assert loaded[0]["id"] == "test/algebra/0.json"

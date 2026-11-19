@@ -1,4 +1,4 @@
-"""Paired thinking/non-thinking GSM8K measurement runner."""
+"""Paired thinking/non-thinking MATH-500 measurement runner."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import platform
 import random
 import re
 import socket
+import statistics
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -19,8 +20,9 @@ from typing import Any
 
 from tqdm import tqdm
 
+from .analysis.worth import worth_matrix_lines, write_worth_matrix
 from .config import Config, HostConfig, load_config
-from .data import load_prepared, random_sample, stratified_sample
+from .data import load_prepared, random_sample
 from .energy.kepler import EnergyDelta, EnergySample, KeplerError, KeplerMeter
 from .grade import grade
 from .ollama_client import ChatResult, OllamaClient, OllamaError
@@ -176,9 +178,8 @@ def record_from_result(
         "question_id": str(row.get("id")),
         "question": row.get("question"),
         "gold": row.get("gold"),
-        "difficulty": int(row.get("difficulty", 1)),
-        "difficulty_raw": row.get("difficulty_raw"),
-        "reasoning_steps": row.get("reasoning_steps"),
+        "subject": row.get("subject"),
+        "level": row.get("level"),
         "prediction": graded.prediction,
         "normalized_prediction": graded.normalized_prediction,
         "normalized_gold": graded.normalized_gold,
@@ -246,21 +247,47 @@ def simple_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         n = len(rows)
         correct = sum(1 for row in rows if row.get("correct"))
+        strict = sum(1 for row in rows if row.get("strict_correct"))
         energy = sum(float(row.get("energy_j") or 0.0) for row in rows)
         tokens = sum(int(row.get("eval_count") or 0) for row in rows)
+        prompt_tokens = sum(int(row.get("prompt_eval_count") or 0) for row in rows)
         latency = sum(float(row.get("wall_duration_s") or 0.0) for row in rows)
         low = sum(1 for row in rows if row.get("low_confidence"))
+        energy_values = sorted(float(row.get("energy_j") or 0.0) for row in rows)
+        ttft_values = [
+            float(row["time_to_first_token_s"])
+            for row in rows
+            if row.get("time_to_first_token_s") is not None
+        ]
+        throughput_values = [
+            float(row["tokens_per_second"])
+            for row in rows
+            if row.get("tokens_per_second") is not None
+        ]
         return {
             "n": n,
             "correct": correct,
             "accuracy": correct / n if n else None,
+            "strict_correct": strict,
+            "strict_accuracy": strict / n if n else None,
             "energy_j": energy,
+            "energy_j_mean": energy / n if n else None,
+            "energy_j_median": statistics.median(energy_values) if n else None,
             "tokens": tokens,
+            "eval_tokens_mean": tokens / n if n else None,
+            "prompt_tokens": prompt_tokens,
+            "prompt_tokens_mean": prompt_tokens / n if n else None,
             "latency_s": latency,
+            "latency_s_mean": latency / n if n else None,
+            "ttft_s_mean": sum(ttft_values) / len(ttft_values) if ttft_values else None,
+            "tokens_per_second_mean": (
+                sum(throughput_values) / len(throughput_values) if throughput_values else None
+            ),
             "energy_per_correct_j": energy / correct if correct else None,
             "tokens_per_correct": tokens / correct if correct else None,
             "latency_per_correct_s": latency / correct if correct else None,
             "low_confidence_windows": low,
+            "low_confidence_rate": low / n if n else None,
         }
 
     by_mode = {
@@ -320,30 +347,96 @@ def _number(value: Any, spec: str = ".2f", dash: str = "-") -> str:
 
 
 def _summary_lines(summary: dict[str, Any]) -> list[str]:
+    def outcome_row(label: str, a: dict[str, Any]) -> str:
+        return (
+            f"{label:<10} {a['n']:>5} {a['correct']:>8} {_number(a['accuracy'], '.3f'):>7} "
+            f"{a['strict_correct']:>7} {_number(a['strict_accuracy'], '.3f'):>7} "
+            f"{_number(a['energy_j'], '.2f'):>14} {_number(a['energy_j_mean'], '.3f'):>10} "
+            f"{_number(a['energy_j_median'], '.3f'):>10} "
+            f"{_number(a['energy_per_correct_j'], '.2f'):>12} "
+            f"{a['low_confidence_windows']:>7} {_number(a['low_confidence_rate'], '.3f'):>8}"
+        )
+
+    def throughput_row(label: str, a: dict[str, Any]) -> str:
+        return (
+            f"{label:<10} {a['tokens']:>10} {_number(a['eval_tokens_mean'], '.1f'):>9} "
+            f"{_number(a['tokens_per_correct'], '.1f'):>12} "
+            f"{_number(a['latency_s'], '.2f'):>12} {_number(a['latency_s_mean'], '.3f'):>9} "
+            f"{_number(a['ttft_s_mean'], '.4f'):>9} "
+            f"{_number(a['latency_per_correct_s'], '.2f'):>13} "
+            f"{_number(a['tokens_per_second_mean'], '.2f'):>10}"
+        )
+
     lines = [
-        f"{'mode':<10} {'n':>5} {'correct':>8} {'acc':>7} "
-        f"{'energy_J':>14} {'tokens':>9} {'latency_s':>11} {'J/correct':>14}"
+        "Aggregate metrics",
+        f"{'mode':<10} {'n':>5} {'correct':>8} {'acc':>7} {'strict':>7} {'s_acc':>7} "
+        f"{'energy_J':>14} {'mean_J':>10} {'median_J':>10} {'J/correct':>12} "
+        f"{'lowconf':>7} {'lc_rate':>8}",
     ]
     for mode in (MODE_NO_THINK, MODE_THINK):
-        a = summary["by_mode"][mode]
-        lines.append(
-            f"{mode:<10} {a['n']:>5} {a['correct']:>8} {_number(a['accuracy'], '.3f'):>7} "
-            f"{_number(a['energy_j'], '.2f'):>14} {a['tokens']:>9} "
-            f"{_number(a['latency_s'], '.1f'):>11} {_number(a['energy_per_correct_j'], '.2f'):>14}"
-        )
+        lines.append(outcome_row(mode, summary["by_mode"][mode]))
     total = summary["total"]
-    lines.append("-" * 82)
-    lines.append(
-        f"{'total':<10} {total['n']:>5} {total['correct']:>8} {_number(total['accuracy'], '.3f'):>7} "
-        f"{_number(total['energy_j'], '.2f'):>14} {total['tokens']:>9} "
-        f"{_number(total['latency_s'], '.1f'):>11} {_number(total['energy_per_correct_j'], '.2f'):>14}"
+    lines.append("-" * 134)
+    lines.append(outcome_row("total", total))
+
+    lines.extend(
+        [
+            "",
+            f"{'mode':<10} {'tokens':>10} {'tok/req':>9} {'tok/correct':>12} "
+            f"{'latency_s':>12} {'s/req':>9} {'ttft_s':>9} {'s/correct':>13} {'tok/s':>10}",
+        ]
     )
+    for mode in (MODE_NO_THINK, MODE_THINK):
+        lines.append(throughput_row(mode, summary["by_mode"][mode]))
+    lines.append("-" * 104)
+    lines.append(throughput_row("total", total))
+    lines.append(
+        "Prompt tokens total/mean: "
+        + ", ".join(
+            f"{mode} {summary['by_mode'][mode]['prompt_tokens']}/"
+            f"{_number(summary['by_mode'][mode]['prompt_tokens_mean'], '.1f')}"
+            for mode in (MODE_NO_THINK, MODE_THINK)
+        )
+        + f", total {total['prompt_tokens']}/{_number(total['prompt_tokens_mean'], '.1f')}"
+    )
+
+    lines.extend(
+        [
+            "",
+            "Per-repetition metrics",
+            f"{'rep':>3} {'mode':<10} {'n':>5} {'correct':>8} {'acc':>7} "
+            f"{'energy_J':>14} {'J/correct':>12} {'tokens':>10} {'latency_s':>12} {'lowconf':>7}",
+        ]
+    )
+    for rep in sorted(summary["by_rep"], key=int):
+        for mode in (MODE_NO_THINK, MODE_THINK):
+            a = summary["by_rep"][rep][mode]
+            lines.append(
+                f"{rep:>3} {mode:<10} {a['n']:>5} {a['correct']:>8} "
+                f"{_number(a['accuracy'], '.3f'):>7} {_number(a['energy_j'], '.2f'):>14} "
+                f"{_number(a['energy_per_correct_j'], '.2f'):>12} {a['tokens']:>10} "
+                f"{_number(a['latency_s'], '.2f'):>12} {a['low_confidence_windows']:>7}"
+            )
+
+    delta = summary["thinking_minus_no_thinking"]
     no_think = summary["by_mode"][MODE_NO_THINK]
     think = summary["by_mode"][MODE_THINK]
-    lines.append(
-        f"Correct answers: no_think {no_think['correct']}/{no_think['n']}, "
-        f"think {think['correct']}/{think['n']}, "
-        f"total {total['correct']}/{total['n']}"
+    lines.extend(
+        [
+            "",
+            "Thinking vs non-thinking",
+            f"Correct answers: no_think {no_think['correct']}/{no_think['n']}, "
+            f"think {think['correct']}/{think['n']}, "
+            f"total {total['correct']}/{total['n']}",
+            f"Extra energy: {_number(delta['extra_energy_j'], '.2f')} J",
+            f"Extra tokens: {delta['extra_tokens']}",
+            f"Extra latency: {_number(delta['extra_latency_s'], '.2f')} s",
+            f"Extra correct: {delta['extra_correct']}",
+            "Extra energy per additional correct: "
+            f"{_number(delta['extra_energy_per_additional_correct_j'], '.2f')} J",
+            "Energy per correct ratio (think/no_think): "
+            f"{_number(delta['energy_per_correct_ratio'], '.3f')}",
+        ]
     )
     return lines
 
@@ -357,7 +450,7 @@ def _natural_id(value: Any) -> tuple[Any, ...]:
 
 def _question_lines(records: list[dict[str, Any]]) -> list[str]:
     lines = [
-        f"{'question_id':<13} {'d':>2} {'mode':<9} {'ok':<3} "
+        f"{'question_id':<13} {'mode':<9} {'ok':<3} "
         f"{'energy_J':>10} {'tok':>5} {'lat_s':>7}  {'gold':<14} {'prediction':<14} question"
     ]
     ordered = sorted(
@@ -367,7 +460,7 @@ def _question_lines(records: list[dict[str, Any]]) -> list[str]:
     for row in ordered:
         if row.get("status") == "error":
             lines.append(
-                f"{row.get('question_id', ''):<13} {row.get('difficulty', ''):>2} "
+                f"{row.get('question_id', ''):<13} "
                 f"{row.get('mode', ''):<9} {'ERR':<3} {row.get('error', '')}"
             )
             continue
@@ -375,7 +468,7 @@ def _question_lines(records: list[dict[str, Any]]) -> list[str]:
         if len(question) > 72:
             question = question[:69] + "..."
         lines.append(
-            f"{str(row.get('question_id', '')):<13} {int(row.get('difficulty', 1)):>2} "
+            f"{str(row.get('question_id', '')):<13} "
             f"{row.get('mode', ''):<9} {'Y' if row.get('correct') else 'N':<3} "
             f"{_number(row.get('energy_j'), '.2f'):>10} {int(row.get('eval_count') or 0):>5} "
             f"{_number(row.get('wall_duration_s'), '.1f'):>7}  "
@@ -389,20 +482,33 @@ def print_report(
     run_dir: Path,
     profile: str,
     max_print_rows: int = 200,
+    summary: dict[str, Any] | None = None,
+    matrix: Any | None = None,
+    write_matrix: bool = True,
 ) -> None:
-    summary = simple_summary(records)
+    summary = summary or simple_summary(records)
+    if matrix is None and write_matrix:
+        try:
+            matrix = write_worth_matrix(records, run_dir)
+        except Exception as exc:
+            print(f"warning: could not compute thinking-worth matrix: {exc}", file=sys.stderr)
     header = [
         f"Results: {run_dir}",
         f"Raw log: {run_dir / 'requests.jsonl'}",
         f"Summary: {run_dir / 'summary.json'}",
         f"Records: {summary['records']}; errors: {summary['errors']}",
     ]
+    if "completed_requests" in summary:
+        header.append(
+            f"Completed requests: {summary['completed_requests']}/{summary['expected_requests']}; "
+            f"elapsed: {_number(summary.get('elapsed_s'), '.1f')} s"
+        )
+    if matrix is not None:
+        header.append(f"Worth matrix: {run_dir / 'worth_matrix.csv'}")
     aggregate = _summary_lines(summary)
+    matrix_lines = worth_matrix_lines(matrix) if matrix is not None else []
     question_lines = _question_lines(records)
-    report_lines = header + [""] + aggregate + [
-        "",
-        "thinking - no_think:",
-        json.dumps(summary["thinking_minus_no_thinking"], indent=2),
+    report_lines = header + [""] + aggregate + [""] + matrix_lines + [
         "",
         "Per-question:",
     ] + question_lines
@@ -421,10 +527,7 @@ def print_report(
             f"... {row_count - max_print_rows} more rows; full table: {report_path}"
         )
 
-    print("\n" + "\n".join(header + [""] + aggregate))
-    print()
-    print("thinking - no_think:")
-    print(json.dumps(summary["thinking_minus_no_thinking"], indent=2))
+    print("\n" + "\n".join(header + [""] + aggregate + [""] + matrix_lines))
     print()
     print("Per-question:")
     print("\n".join(display))
@@ -432,17 +535,11 @@ def print_report(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run paired Qwen3 GSM8K measurements")
+    parser = argparse.ArgumentParser(description="Run paired Qwen3 MATH-500 measurements")
     parser.add_argument("--config", default="configs/experiment.yaml")
     parser.add_argument("--host-config", default="configs/host.local.yaml")
     parser.add_argument("--profile", choices=("test", "pilot", "full"), default="test")
     parser.add_argument("--limit", type=int, default=None, help="override number of questions")
-    parser.add_argument(
-        "--sample-mode",
-        choices=("random", "stratified"),
-        default="stratified",
-        help="question sampling method when --limit is used",
-    )
     parser.add_argument("--sample-seed", type=int, default=None, help="seed for question selection")
     parser.add_argument("--reps", type=int, default=None, help="override repetitions")
     parser.add_argument("--out", default=None, help="run directory (default results/run-<timestamp>-<profile>)")
@@ -453,6 +550,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None, help="seed for run order; also sampling unless --sample-seed is set")
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument("--max-print-rows", type=int, default=200, help="max per-question rows printed for full runs")
+    parser.add_argument("--no-matrix", action="store_true", help="skip writing worth_matrix.csv/json after the run")
     return parser.parse_args(argv)
 
 
@@ -490,10 +588,8 @@ def main(argv: list[str] | None = None) -> int:
     if n_questions <= 0 or n_questions >= len(rows):
         questions = list(rows)
         random.Random(sample_seed).shuffle(questions)
-    elif args.sample_mode == "random":
-        questions = random_sample(rows, n_questions, seed=sample_seed)
     else:
-        questions = stratified_sample(rows, n_questions, seed=sample_seed)
+        questions = random_sample(rows, n_questions, seed=sample_seed)
 
     base = config.results_path
     base.mkdir(parents=True, exist_ok=True)
@@ -531,7 +627,6 @@ def main(argv: list[str] | None = None) -> int:
                 "profile": args.profile,
                 "questions": len(questions),
                 "repetitions": reps,
-                "sample_mode": args.sample_mode,
                 "sample_seed": sample_seed,
                 "order_seed": config.seed,
             },
@@ -552,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Kepler zone: {config.kepler_zone}; monitor interval: {config.kepler_monitor_interval_ms} ms")
         print(
             f"Questions: {len(questions)}; repetitions: {reps}; modes: {MODE_NO_THINK}/{MODE_THINK}; "
-            f"sampling: {args.sample_mode} (seed {sample_seed})"
+            f"random sampling (seed {sample_seed})"
         )
 
     if not completed:
@@ -574,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
         unit="req",
     )
     records: list[dict[str, Any]] = []
+    matrix = None
     if requests_path.exists():
         with requests_path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -610,7 +706,6 @@ def main(argv: list[str] | None = None) -> int:
                                 "question_id": str(row.get("id")),
                                 "question": row.get("question"),
                                 "gold": row.get("gold"),
-                                "difficulty": int(row.get("difficulty", 1)),
                                 "status": "error",
                                 "correct": False,
                                 "energy_j": None,
@@ -661,6 +756,15 @@ def main(argv: list[str] | None = None) -> int:
         summary["completed_requests"] = len(records)
         summary["expected_requests"] = total
         write_json(run_dir / "summary.json", summary)
+        if not args.no_matrix:
+            try:
+                from .analysis.metrics import frame_to_json
+
+                matrix = write_worth_matrix(records, run_dir)
+                summary["worth_matrix"] = frame_to_json(matrix)
+                write_json(run_dir / "summary.json", summary)
+            except Exception as exc:
+                print(f"warning: could not write thinking-worth matrix: {exc}", file=sys.stderr)
         latest = base / "latest"
         try:
             if latest.is_symlink() or latest.exists():
@@ -670,7 +774,15 @@ def main(argv: list[str] | None = None) -> int:
             pass
         lock_handle.close()
 
-    print_report(records, run_dir, args.profile, max_print_rows=args.max_print_rows)
+    print_report(
+        records,
+        run_dir,
+        args.profile,
+        max_print_rows=args.max_print_rows,
+        summary=summary,
+        matrix=matrix,
+        write_matrix=not args.no_matrix,
+    )
     return 0
 
 

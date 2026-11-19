@@ -16,6 +16,7 @@ import seaborn as sns
 
 from ..config import resolve_path
 from .metrics import load_records, save_summaries, summarize
+from .worth import worth_matrix_lines
 
 
 def _plot_mode_summary(mode: pd.DataFrame, outdir: Path) -> None:
@@ -34,24 +35,6 @@ def _plot_mode_summary(mode: pd.DataFrame, outdir: Path) -> None:
         axis.tick_params(axis="x", rotation=0)
     fig.tight_layout()
     fig.savefig(outdir / "mode_summary.png", dpi=200)
-    plt.close(fig)
-
-
-def _plot_difficulty_heatmap(difficulty: pd.DataFrame, outdir: Path) -> None:
-    if difficulty.empty:
-        return
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
-    for axis, column, title in (
-        (axes[0], "energy_per_correct_j", "Energy per correct answer (J)"),
-        (axes[1], "accuracy", "Accuracy"),
-    ):
-        pivot = difficulty.pivot(index="difficulty", columns="mode", values=column)
-        sns.heatmap(pivot, annot=True, fmt=".3g", cmap="viridis", ax=axis)
-        axis.set_title(title)
-        axis.set_xlabel("")
-        axis.set_ylabel("Difficulty proxy (1=easiest)")
-    fig.tight_layout()
-    fig.savefig(outdir / "difficulty_heatmap.png", dpi=200)
     plt.close(fig)
 
 
@@ -118,15 +101,21 @@ def main(argv: list[str] | None = None) -> int:
 
     sns.set_theme(style="whitegrid")
     _plot_mode_summary(summaries["mode"], outdir)
-    _plot_difficulty_heatmap(summaries["difficulty"], outdir)
     _plot_paired(summaries["paired"], outdir)
     _plot_marginal(summaries["marginal"], outdir)
 
     errors = int((frame["status"] == "error").sum())
     print(f"Records: {len(frame)} (errors: {errors})")
-    for name in ("mode", "difficulty", "paired", "marginal"):
+    matrix = summaries.get("worth_matrix")
+    if matrix is not None:
+        print()
+        print("\n".join(worth_matrix_lines(matrix)))
+        print(f"Full thinking-worth matrix: {outdir / 'worth_matrix.csv'}")
+    for name, table in summaries.items():
+        if name == "worth_matrix":
+            continue
         print(f"\n== {name} ==")
-        print(summaries[name].to_string(index=False))
+        print(table.to_string(index=False))
     print(f"\nWrote analysis to {outdir}")
     return 0
 

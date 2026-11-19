@@ -52,8 +52,8 @@ def check_dataset(config: Config) -> Check:
         first_line = path.read_text(encoding="utf-8").splitlines()[0]
     except (OSError, IndexError) as exc:
         return Check("dataset", False, f"cannot read {path}: {exc}")
-    if '"gold"' not in first_line or '"difficulty"' not in first_line:
-        return Check("dataset", False, f"{path} is not a prepared GSM8K file")
+    if '"gold"' not in first_line:
+        return Check("dataset", False, f"{path} is not a prepared MATH-500 file")
     count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
     return Check("dataset", True, f"{count} rows at {path}")
 

@@ -5,11 +5,10 @@ HOST_CONFIG ?= configs/host.local.yaml
 RESULTS ?= results/latest
 QUESTIONS ?=
 SEED ?=
-SAMPLE ?= random
 RUN_ARGS ?=
-RUN_FLAGS := $(if $(QUESTIONS),--limit $(QUESTIONS) --sample-mode $(SAMPLE)) $(if $(SEED),--seed $(SEED)) $(RUN_ARGS)
+RUN_FLAGS := $(if $(QUESTIONS),--limit $(QUESTIONS)) $(if $(SEED),--seed $(SEED)) $(RUN_ARGS)
 
-.PHONY: help install verify test pilot run analyze unit data preflight restore-cpu clean
+.PHONY: help install verify test pilot run analyze matrix unit data preflight restore-cpu clean
 
 help:
 	@printf '%s\n' \
@@ -18,11 +17,12 @@ help:
 	  '  make verify      Independently verify the installation' \
 	  '  make test        Five-question end-to-end smoke run' \
 	  '  make pilot       100-question pilot, one repetition' \
-	  '  make run         Full GSM8K run, three repetitions' \
+	  '  make run         Full MATH-500 run, three repetitions' \
 	  '                   e.g. make run QUESTIONS=100 SEED=7' \
 	  '  make analyze     Analyze results/latest and write plots' \
+	  '  make matrix      Print the thinking-worth matrix for results/latest' \
 	  '  make unit        Run pytest' \
-	  '  make data        Download and prepare GSM8K' \
+	  '  make data        Download, prepare and summarize MATH-500' \
 	  '  make preflight   Check services, model, dataset and Kepler' \
 	  '  make restore-cpu Restore the saved CPU governor/turbo state' \
 	  '  make clean       Remove Python caches (results are kept)'
@@ -45,11 +45,15 @@ run:
 analyze:
 	$(PYTHON) -m susco.analysis.report --results "$(RESULTS)"
 
+matrix:
+	$(PYTHON) -m susco.analysis.report --results "$(RESULTS)"
+
 unit:
 	$(PYTHON) -m pytest
 
 data:
-	$(PYTHON) -m susco.data prepare --output data/processed/gsm8k_test.jsonl
+	$(PYTHON) -m susco.data prepare --output data/processed/math500_test.jsonl
+	$(PYTHON) -m susco.data stats --input data/processed/math500_test.jsonl
 
 preflight:
 	$(PYTHON) -m susco.preflight --config "$(CONFIG)" --host-config "$(HOST_CONFIG)"

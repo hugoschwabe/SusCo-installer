@@ -39,7 +39,7 @@ class Config:
     ollama_url: str = "http://127.0.0.1:11434"
     kepler_url: str = "http://127.0.0.1:28282/metrics"
     prometheus_url: str = "http://127.0.0.1:9090"
-    dataset: str = "data/processed/gsm8k_test.jsonl"
+    dataset: str = "data/processed/math500_test.jsonl"
     results_dir: str = "results"
 
     temperature: float = 0.0
@@ -50,8 +50,8 @@ class Config:
     num_ctx: int = 4096
     num_gpu: int = 0
     system_prompt: str = (
-        'Solve the problem carefully. End your final answer with a line of the '
-        'form "#### <number>". Do not put anything after that line.'
+        "Solve the problem carefully. Put your final answer in \\boxed{...}. "
+        "Do not put anything after the boxed answer."
     )
 
     test_questions: int = 5
@@ -71,7 +71,6 @@ class Config:
     kepler_timeout_s: float = 3.0
     low_confidence_window_factor: float = 5.0
 
-    difficulty_bins: int = 5
     sample_seed: int = 42
 
     @property

@@ -354,7 +354,7 @@ if grep -q 'OLLAMA_KEEP_ALIVE=-1' <<<"$envdump"; then pass "Ollama keep-alive" "
 else warn "Ollama keep-alive" "KEEP_ALIVE=-1 not set; model may unload between runs"; fi
 
 if curl -fsS --max-time 5 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-  prompt='What is 17*23? End with #### <number>.'
+  prompt='What is 17*23? Put the final answer in \\boxed{...}.'
   payload_false="$(jq -n --arg m "$MODEL" --arg p "$prompt" \
     '{model:$m,messages:[{role:"user",content:$p}],think:false,stream:false,options:{temperature:0,num_predict:256,num_gpu:0}}')"
   resp_false="$(curl -fsS --max-time 300 http://127.0.0.1:11434/api/chat \
@@ -402,8 +402,8 @@ fi
 section "Python / analysis"
 # ---------------------------------------------------------------------------
 if [[ -x "$INSTALL_DIR/.venv/bin/python" ]]; then
-  if "$INSTALL_DIR/.venv/bin/python" -c 'import pandas, numpy, scipy, matplotlib, seaborn, yaml, requests' >/dev/null 2>&1; then
-    pass "Analysis deps" "pandas/numpy/scipy/matplotlib/seaborn ok"
+  if "$INSTALL_DIR/.venv/bin/python" -c 'import pandas, numpy, scipy, matplotlib, seaborn, sympy, math_verify, yaml, requests' >/dev/null 2>&1; then
+    pass "Analysis deps" "pandas/numpy/scipy/matplotlib/seaborn/sympy/math-verify ok"
   else
     fail "Analysis deps" "one or more imports failed"
   fi
